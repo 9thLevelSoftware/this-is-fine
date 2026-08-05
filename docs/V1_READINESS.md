@@ -132,12 +132,12 @@ _
 | ID | Criterion | Pass / Fail criteria | Owner | Evidence | Status |
 |----|-----------|----------------------|-------|----------|--------|
 | **P1-1** | **Signed releases** | Cosign or GPG signatures published with every `v*` release; verify steps in user-guide | REL | Workflow + user-guide; needs first signed tag dry-run | In progress |
-| **P1-2** | **Published package channel** | At least **one** of: Homebrew formula live, WinGet package live, or distro package — **or** explicit “binary-only v1.0” product decision signed by PM | REL / PM | **Binary-only v0.1/v1 candidate decision:** ship install scripts + GitHub Releases only; Homebrew/WinGet remain stubs (see ROADMAP). PM may waive to formalize. | **Waived** (binary-only; revisit package indexes) |
+| **P1-2** | **Published package channel** | At least **one** of: Homebrew formula live, WinGet package live, or distro package — **or** explicit “binary-only v1.0” product decision signed by PM | REL / PM | Proposed binary-only path (install scripts + GitHub Releases; Homebrew/WinGet stubs). **Not waived** until PM fills Approved-by on the draft waiver below. | **In progress** |
 | **P1-3** | Provider contract tests in CI | Mock + recorded/fixture HTTP contract tests for OpenAI-compatible response shape (no live keys required) | TL | `parse_chat_completion_content` / apply fixture tests in `providers` | **Pass** (automated) |
 | **P1-4** | Second agent adapter E2E | Second agent of the four launch set proven E2E on one OS | DX | Protocol installers + matrix for all four; vendor product E2E residual | In progress |
 | **P1-5** | aarch64 (or documented skip) | Release matrix cell green **or** “unsupported arch” listed in install docs | REL | `release.yml` builds `aarch64-unknown-linux-gnu` + `aarch64-apple-darwin` | **Pass** (release matrix) |
 | **P1-6** | Performance budgets recorded | Policy resolve p95 budget; assess on ≥10k-line diff budget; measured once on reference hardware | QA | **C03** (policy×100 + assess 10k lines); CI user-testing | **Pass** (smoke budgets) |
-| **P1-7** | Adapter version matrix | Table: agent product version × tested tif version × OS | DX | [adapters/VERSION_MATRIX.md](adapters/VERSION_MATRIX.md) | **Pass** (protocol rows); fill vendor versions later |
+| **P1-7** | Adapter version matrix | Table: agent product version × tested tif version × OS | DX | [adapters/VERSION_MATRIX.md](adapters/VERSION_MATRIX.md) has protocol placeholders only — **needs real agent product versions** | **In progress** |
 | **P1-8** | Upgrade / uninstall tested | Install → upgrade to next RC → uninstall leaves no secrets in default paths | REL | | Unknown |
 | **P1-9** | TUI destructive ops reviewed | Rollback/purge confirmations verified manually on narrow terminal | DX | TUI unit/state tests for confirmations | Pass (unit); manual residual |
 | **P1-10** | CI write path dry-run | Template job with `allow_write` produces patch artifact only; protected branch never updated | SRE | Templates double-gated; threat-model | **Pass** (template review) |
@@ -154,7 +154,7 @@ _
 | **Approved by (EM + SEC if security)** | |
 | **Date** | |
 
-### Active P1 waiver: P1-2 package channel
+### Draft P1 waiver: P1-2 package channel (not active until PM signs)
 
 | Field | Value |
 |-------|--------|
@@ -163,8 +163,8 @@ _
 | **Risk if shipped** | Users must use curl/irm install scripts rather than package managers |
 | **Mitigation** | Documented install paths; SHA256SUMS; optional cosign; formula stubs remain for later |
 | **Expiry / revisit date** | 2026-12-01 or first public index submission |
-| **Approved by (EM + SEC if security)** | Project default (PM confirm) |
-| **Date** | 2026-08-05 |
+| **Approved by (EM + SEC if security)** | _Pending PM signature_ |
+| **Date** | _—_ |
 
 ---
 
@@ -272,7 +272,7 @@ Honest fill-in for planning (update as evidence lands):
 |------|------------|
 | Feature completeness (design) | **High** — phases 0–10 on main |
 | Automated tests / multi-OS CI | **High** — green matrix + user-testing evidence artifacts |
-| Supply chain (signing / packages) | **Medium** — checksums + optional cosign; packages waived binary-only |
+| Supply chain (signing / packages) | **Medium** — checksums + optional cosign; package channel decision still open (P1-2) |
 | Field soak | **High (AI battery)** — Tiers A–D including C01 N=50; optional human vendor day residual |
 | Security review | **High (internal X2)** — formal pack + threat model; human countersign residual |
 | Support readiness | **Medium** — contact path documented; no 24×7 rota |
