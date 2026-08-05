@@ -4,7 +4,7 @@ members = ["crates/tif-core", "crates/tif", "crates/tif-e2e"]
 default-members = ["crates/tif"]
 
 [workspace.package]
-version = "0.1.1"
+version = "1.0.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/9thLevelSoftware/this-is-fine"
@@ -12,7 +12,7 @@ authors = ["This Is Fine Contributors"]
 rust-version = "1.75"
 
 [workspace.dependencies]
-tif-core = { path = "crates/tif-core", version = "0.1.1" }
+tif-core = { path = "crates/tif-core", version = "1.0.0" }
 anyhow = "1"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std", "serde"] }
 clap = { version = "4", features = ["derive", "env"] }
