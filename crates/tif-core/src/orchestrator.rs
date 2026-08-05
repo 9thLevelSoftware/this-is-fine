@@ -1149,26 +1149,27 @@ mod tests {
         use tempfile::tempdir;
 
         fn phase2_cfg(require_approval: bool) -> Config {
-            let mut cfg = Config::default();
-            cfg.verification = VerificationConfig {
-                commands: vec!["echo tif-ok".into()],
-                discover: false,
-            };
-            cfg.simplicity = SimplicityConfig {
-                limits: SimplicityLimits {
-                    new_runtime_dependencies: Some(0),
+            Config {
+                verification: VerificationConfig {
+                    commands: vec!["echo tif-ok".into()],
+                    discover: false,
+                },
+                simplicity: SimplicityConfig {
+                    limits: SimplicityLimits {
+                        new_runtime_dependencies: Some(0),
+                        ..Default::default()
+                    },
                     ..Default::default()
                 },
+                approval: ApprovalConfig {
+                    require_firebreak_approval: require_approval,
+                    auto_apply_firebreak: true,
+                    approval_ttl_hours: Some(24),
+                    ..Default::default()
+                },
+                reviewers: vec![ReviewerConfig::mock("phase2-mock", 100)],
                 ..Default::default()
-            };
-            cfg.approval = ApprovalConfig {
-                require_firebreak_approval: require_approval,
-                auto_apply_firebreak: true,
-                approval_ttl_hours: Some(24),
-                ..Default::default()
-            };
-            cfg.reviewers.push(ReviewerConfig::mock("phase2-mock", 100));
-            cfg
+            }
         }
 
         fn plant_repo(root: &std::path::Path, reduce_bytes: usize, fail: bool, inflate: bool) {
