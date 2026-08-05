@@ -5,20 +5,22 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use tif_e2e::{assert_scenario, ensure_tif_built, run_scenario, tif_bin, workspace_root};
 
-/// P1-8: install → reinstall (upgrade) → uninstall leaves no binary; optional secrets purge.
+/// P1-8: real install scripts → reinstall (upgrade) → uninstall removes binary.
 #[test]
 fn p18_upgrade_uninstall_from_source() {
     ensure_tif_built();
     let r = run_scenario("P18", || {
         let prefix = tempfile::tempdir().map_err(|e| e.to_string())?;
-        let bin = install_from_source(prefix.path())?;
+        let secrets_home = tempfile::tempdir().map_err(|e| e.to_string())?;
+
+        let bin = install_via_script(prefix.path())?;
         if !bin.is_file() {
             return Err(format!("missing binary after install: {}", bin.display()));
         }
         let v1 = run_bin_version(&bin)?;
 
-        // Upgrade: install again into same prefix.
-        let bin2 = install_from_source(prefix.path())?;
+        // Upgrade: install scripts again into the same prefix.
+        let bin2 = install_via_script(prefix.path())?;
         if !bin2.is_file() {
             return Err("missing binary after upgrade install".into());
         }
@@ -27,23 +29,49 @@ fn p18_upgrade_uninstall_from_source() {
             return Err(format!("empty version: v1={v1:?} v2={v2:?}"));
         }
 
-        uninstall_prefix(prefix.path())?;
+        // Plant secrets matching credentials::secrets_dir() layout:
+        // Unix: $XDG_CONFIG_HOME/tif/secrets or ~/.config/tif/secrets
+        // Windows: %APPDATA%/tif/secrets
+        let secrets = if cfg!(windows) {
+            secrets_home
+                .path()
+                .join("AppData")
+                .join("Roaming")
+                .join("tif")
+                .join("secrets")
+        } else {
+            secrets_home
+                .path()
+                .join(".config")
+                .join("tif")
+                .join("secrets")
+        };
+        fs::create_dir_all(&secrets).map_err(|e| e.to_string())?;
+        fs::write(secrets.join("key"), b"secret-material").map_err(|e| e.to_string())?;
+        // Also plant under PREFIX/secrets for custom-prefix purge.
+        let pref_secrets = prefix.path().join("secrets");
+        fs::create_dir_all(&pref_secrets).map_err(|e| e.to_string())?;
+        fs::write(pref_secrets.join("key2"), b"more-secret").map_err(|e| e.to_string())?;
+
+        uninstall_prefix(prefix.path(), secrets_home.path(), true)?;
         if bin.is_file() || bin2.is_file() {
             return Err("binary still present after uninstall".into());
         }
-
-        // Secrets dir under a custom isolated secrets path: create then purge check.
-        let secrets = prefix.path().join("secrets-test");
-        fs::create_dir_all(&secrets).map_err(|e| e.to_string())?;
-        fs::write(secrets.join("key"), b"secret-material").map_err(|e| e.to_string())?;
-        // Uninstall scripts purge platform dirs; for the test assert we can wipe our isolated dir.
-        fs::remove_dir_all(&secrets).map_err(|e| e.to_string())?;
         if secrets.exists() {
-            return Err("secrets dir remained after purge".into());
+            return Err(format!(
+                "HOME secrets still present after --purge-secrets: {}",
+                secrets.display()
+            ));
+        }
+        if pref_secrets.exists() {
+            return Err(format!(
+                "PREFIX/secrets still present after purge: {}",
+                pref_secrets.display()
+            ));
         }
 
         Ok(format!(
-            "install+upgrade+uninstall ok versions={v1}/{v2} prefix={}",
+            "real install+upgrade+uninstall+purge ok versions={v1}/{v2} prefix={}",
             prefix.path().display()
         ))
     });
@@ -69,11 +97,12 @@ fn f5_adapter_install_scripts_smoke() {
 
             let home = tempfile::tempdir().map_err(|e| e.to_string())?;
             let cwd = tempfile::tempdir().map_err(|e| e.to_string())?;
-            // Isolated cwd so adapters that write `.this-is-fine/` stay sandboxed.
             fs::write(cwd.path().join("README.md"), b"adapter smoke").map_err(|e| e.to_string())?;
 
             if sh.is_file() {
                 if let Some(bash) = find_bash() {
+                    // Per-adapter CLI shapes (documented in each install.md):
+                    // claude-code: skills dir; codex: AGENTS.md path; others: optional dest.
                     let arg = match name {
                         "claude-code" => home.path().join("skills/this-is-fine"),
                         "codex" => cwd.path().join("AGENTS.md"),
@@ -139,31 +168,8 @@ fn f5_adapter_install_scripts_smoke() {
     assert_scenario(&r);
 }
 
-fn install_from_source(prefix: &Path) -> Result<PathBuf, String> {
-    // Fast path: stage layout using workspace-built binary (exercises uninstall scripts).
-    // Full cargo install --from-source is documented in RELEASE_DRY_RUN.md for Q4.
-    ensure_tif_built();
-    let bin_dir = prefix.join("bin");
-    fs::create_dir_all(&bin_dir).map_err(|e| e.to_string())?;
-    let dest = if cfg!(windows) {
-        bin_dir.join("tif.exe")
-    } else {
-        bin_dir.join("tif")
-    };
-    fs::copy(tif_bin(), &dest).map_err(|e| format!("copy tif into prefix: {e}"))?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mut perms = fs::metadata(&dest)
-            .map_err(|e| e.to_string())?
-            .permissions();
-        perms.set_mode(0o755);
-        fs::set_permissions(&dest, perms).map_err(|e| e.to_string())?;
-    }
-    Ok(dest)
-}
-
-fn uninstall_prefix(prefix: &Path) -> Result<(), String> {
+/// Invoke real install scripts (`--from-source` / `-FromSource`).
+fn install_via_script(prefix: &Path) -> Result<PathBuf, String> {
     let root = workspace_root();
     let status = if cfg!(windows) {
         Command::new("powershell")
@@ -172,21 +178,76 @@ fn uninstall_prefix(prefix: &Path) -> Result<(), String> {
                 "-ExecutionPolicy",
                 "Bypass",
                 "-File",
-                root.join("scripts/uninstall.ps1")
-                    .display()
-                    .to_string()
-                    .as_str(),
+                &root.join("scripts/install.ps1").display().to_string(),
+                "-FromSource",
                 "-Prefix",
-                prefix.display().to_string().as_str(),
+                &prefix.display().to_string(),
             ])
+            .current_dir(&root)
+            .status()
+            .map_err(|e| e.to_string())?
+    } else {
+        let bash = find_bash().ok_or("bash required for install.sh")?;
+        let script = to_bash_path(&root.join("scripts/install.sh"));
+        let pref = to_bash_path(prefix);
+        Command::new(bash)
+            .args([script.as_str(), "--from-source", "--prefix", pref.as_str()])
+            .current_dir(&root)
+            .status()
+            .map_err(|e| e.to_string())?
+    };
+    if !status.success() {
+        return Err(format!("install script failed: {status:?}"));
+    }
+    let bin = if cfg!(windows) {
+        prefix.join("bin").join("tif.exe")
+    } else {
+        prefix.join("bin").join("tif")
+    };
+    if bin.is_file() {
+        return Ok(bin);
+    }
+    Err(format!(
+        "could not locate installed tif under {}",
+        prefix.display()
+    ))
+}
+
+fn uninstall_prefix(prefix: &Path, home: &Path, purge_secrets: bool) -> Result<(), String> {
+    let root = workspace_root();
+    let status = if cfg!(windows) {
+        let mut args = vec![
+            "-NoProfile".into(),
+            "-ExecutionPolicy".into(),
+            "Bypass".into(),
+            "-File".into(),
+            root.join("scripts/uninstall.ps1").display().to_string(),
+            "-Prefix".into(),
+            prefix.display().to_string(),
+        ];
+        if purge_secrets {
+            args.push("-PurgeSecrets".into());
+        }
+        Command::new("powershell")
+            .args(&args)
+            .env("APPDATA", home.join("AppData").join("Roaming"))
+            .env("LOCALAPPDATA", home.join("AppData").join("Local"))
+            .env("HOME", home)
+            .env("USERPROFILE", home)
             .status()
             .map_err(|e| e.to_string())?
     } else {
         let bash = find_bash().ok_or("bash required for uninstall.sh")?;
         let script = to_bash_path(&root.join("scripts/uninstall.sh"));
         let pref = to_bash_path(prefix);
+        let mut args = vec![script.clone(), "--prefix".into(), pref];
+        if purge_secrets {
+            args.push("--purge-secrets".into());
+        }
         Command::new(bash)
-            .args([script.as_str(), "--prefix", pref.as_str()])
+            .args(&args)
+            .env("HOME", home)
+            .env("XDG_CONFIG_HOME", home.join(".config"))
             .status()
             .map_err(|e| e.to_string())?
     };

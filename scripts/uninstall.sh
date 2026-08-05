@@ -14,6 +14,7 @@ while [[ $# -gt 0 ]]; do
     --purge-secrets) PURGE_SECRETS=1; shift ;;
     -h|--help)
       echo "Usage: $0 [--prefix DIR] [--purge-secrets]"
+      echo "  --purge-secrets  Remove only credential secrets dirs (not full config trees)"
       exit 0
       ;;
     *) echo "unknown arg: $1" >&2; exit 2 ;;
@@ -36,16 +37,26 @@ if [[ "$removed" -eq 0 ]]; then
 fi
 
 if [[ "${PURGE_SECRETS}" -eq 1 ]]; then
-  # Platform config dir used by tif credentials (directories crate: ProjectDirs)
+  # Must match credentials::secrets_dir() — ProjectDirs application name "tif":
+  #   ~/.config/tif/secrets  or  $XDG_CONFIG_HOME/tif/secrets
+  #   macOS: ~/Library/Application Support/tif/secrets
+  # Also purge PREFIX/secrets if a custom install layout put credentials there.
   candidates=(
-    "${HOME}/.config/this-is-fine"
-    "${HOME}/.local/share/this-is-fine"
-    "${HOME}/Library/Application Support/this-is-fine"
+    "${XDG_CONFIG_HOME:-${HOME}/.config}/tif/secrets"
+    "${HOME}/.config/tif/secrets"
+    "${HOME}/Library/Application Support/tif/secrets"
+    "${PREFIX}/secrets"
   )
+  # De-dupe
+  seen=""
   for d in "${candidates[@]}"; do
+    case " ${seen} " in
+      *" ${d} "*) continue ;;
+    esac
+    seen="${seen} ${d}"
     if [[ -d "$d" ]]; then
       rm -rf "$d"
-      echo "Purged secrets/config dir ${d}"
+      echo "Purged secrets ${d}"
     fi
   done
 fi

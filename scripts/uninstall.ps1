@@ -23,18 +23,24 @@ if (-not $removed) {
 }
 
 if ($PurgeSecrets) {
-    $candidates = @(
-        (Join-Path $env:LOCALAPPDATA "this-is-fine"),
-        (Join-Path $env:APPDATA "this-is-fine")
-    )
+    # Must match credentials::secrets_dir() — ProjectDirs application name "tif":
+    # typically %APPDATA%\tif\secrets (config_dir on Windows).
+    $candidates = New-Object System.Collections.Generic.List[string]
+    if ($env:APPDATA) {
+        $candidates.Add((Join-Path $env:APPDATA "tif\secrets"))
+    }
+    if ($env:LOCALAPPDATA) {
+        $candidates.Add((Join-Path $env:LOCALAPPDATA "tif\secrets"))
+    }
+    # Custom prefix installs may co-locate secrets under Prefix.
+    $candidates.Add((Join-Path $Prefix "secrets"))
+    $seen = @{}
     foreach ($d in $candidates) {
+        if ($seen.ContainsKey($d)) { continue }
+        $seen[$d] = $true
         if (Test-Path $d) {
-            # Only remove secrets subdir if present; do not wipe Prefix bin parent if shared
-            $secrets = Join-Path $d "secrets"
-            if (Test-Path $secrets) {
-                Remove-Item -Recurse -Force $secrets
-                Write-Host "Purged $secrets"
-            }
+            Remove-Item -Recurse -Force $d
+            Write-Host "Purged secrets $d"
         }
     }
 }

@@ -79,10 +79,29 @@ install_from_source() {
 }
 
 # Shared local SUMS verification (also used by e2e Tier D via scripts/lib/sha256-verify.sh).
+# When run from a git checkout, source sibling lib/. When piped via curl|bash,
+# BASH_SOURCE is not a real path — fetch the lib from the same repo raw URL.
 # shellcheck source=lib/sha256-verify.sh
-_TIF_INSTALL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# shellcheck disable=SC1091
-source "${_TIF_INSTALL_DIR}/lib/sha256-verify.sh"
+_src="${BASH_SOURCE[0]:-}"
+if [[ -n "${_src}" && -f "${_src}" ]]; then
+  _TIF_INSTALL_DIR="$(cd "$(dirname "${_src}")" && pwd)"
+else
+  _TIF_INSTALL_DIR=""
+fi
+if [[ -n "${_TIF_INSTALL_DIR}" && -f "${_TIF_INSTALL_DIR}/lib/sha256-verify.sh" ]]; then
+  # shellcheck disable=SC1091
+  source "${_TIF_INSTALL_DIR}/lib/sha256-verify.sh"
+else
+  _lib_tmp="$(mktemp)"
+  if ! curl -fsSL "https://raw.githubusercontent.com/${REPO}/main/scripts/lib/sha256-verify.sh" -o "${_lib_tmp}"; then
+    echo "ERROR: cannot load sha256-verify.sh (not adjacent to install.sh and download failed)" >&2
+    rm -f "${_lib_tmp}"
+    exit 1
+  fi
+  # shellcheck disable=SC1090
+  source "${_lib_tmp}"
+  rm -f "${_lib_tmp}"
+fi
 
 verify_asset() {
   local asset_path="$1"

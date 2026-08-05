@@ -113,7 +113,7 @@ In the TUI (`tif tui`): open **Firebreak**, select a run, `a` approve / `x` reje
 - **Primary channel:** GitHub Issues — https://github.com/9thLevelSoftware/this-is-fine/issues (label `incident` / `P0` for blockers)  
 - **Runbook:** this document (recovery sections below)  
 - **Security reports:** prefer private disclosure if available; otherwise open a security-labeled issue without secrets  
-- **Uninstall:** `scripts/uninstall.sh` / `scripts/uninstall.ps1` (optional `--purge-secrets` / `-PurgeSecrets`)
+- **Uninstall:** `scripts/uninstall.sh` / `scripts/uninstall.ps1` (optional `--purge-secrets` / `-PurgeSecrets` removes only `…/tif/secrets` credential dirs, not full config trees)
 
 v0.1 is best-effort community support, not a committed 24×7 SLA.
 
