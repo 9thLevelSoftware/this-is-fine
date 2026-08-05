@@ -37,11 +37,14 @@ Canonical design: [`docs/superpowers/specs/2026-08-04-this-is-fine-design.md`](s
 | [security/threat-model.md](security/threat-model.md) | Threats and controls |
 | [VERSIONING.md](VERSIONING.md) | SemVer / schema / protocol versions |
 | [user-guide.md](user-guide.md) | Install, recovery runbook |
+| [V1_READINESS.md](V1_READINESS.md) | v1.0 Must/Should checklist + soak program |
 | [../CHANGELOG.md](../CHANGELOG.md) | Release notes |
 
 ## Exit criteria for GA
 
 See production acceptance checklist below (design §21 surface).
+
+**v1.0 / “fully production ready” gate:** [`V1_READINESS.md`](V1_READINESS.md) — Must (P0) items with owners and pass/fail criteria. Phases 0–10 make the product *capable*; that checklist makes *ready* measurable.
 
 ## GA checklist (Phase 10 — complete)
 
