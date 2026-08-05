@@ -88,17 +88,17 @@ jobs:
       - name: Run tif-e2e battery + evidence pack
         shell: bash
         run: |
-          set -euo pipefail
+          set -uo pipefail
           OUT="evidence/user-testing/ci-${{ matrix.os }}-${{ github.run_id }}"
           mkdir -p "$OUT"
+          # Capture cargo exit separately so a broken evidence helper cannot mask it.
           set +e
           cargo test -p tif-e2e --all-targets -- --nocapture 2>&1 | tee "$OUT/cargo-test.log"
           CODE=${PIPESTATUS[0]}
-          set -e
           if command -v python3 >/dev/null 2>&1; then
-            python3 scripts/user-test/write_evidence.py "$OUT" "$CODE"
+            python3 scripts/user-test/write_evidence.py "$OUT" "$CODE" || true
           elif command -v python >/dev/null 2>&1; then
-            python scripts/user-test/write_evidence.py "$OUT" "$CODE"
+            python scripts/user-test/write_evidence.py "$OUT" "$CODE" || true
           fi
           if [[ "$CODE" -eq 0 ]]; then echo Pass >"$OUT/STATUS"; else echo Fail >"$OUT/STATUS"; fi
           exit "$CODE"

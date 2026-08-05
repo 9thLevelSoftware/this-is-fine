@@ -7,12 +7,12 @@ Automated coverage: `tif_core::adapter_conformance` + USER_TESTING **B12** (life
 
 | Agent | Product version tested | tif version / commit | OS | Mode | Result |
 |-------|------------------------|----------------------|----|------|--------|
-| Claude Code | *hooks install docs* | workspace `0.1.0` | Win + Unix scripts present | Protocol (JSON lifecycle) | Pass (protocol) via B12 + conformance |
-| Codex | *AGENTS snippet + bridge* | workspace `0.1.0` | Win + Unix | Protocol | Pass (protocol) |
-| Gemini CLI | *context generators* | workspace `0.1.0` | Win + Unix | Protocol | Pass (protocol) |
-| OpenCode | *plugin hooks* | workspace `0.1.0` | Win + Unix | Protocol | Pass (protocol) |
+| Claude Code | *hooks install docs* | workspace `0.1.0` | Win + Unix scripts present | Protocol (JSON lifecycle) | Protocol-ready (B12 + conformance) — **not F5** |
+| Codex | *AGENTS snippet + bridge* | workspace `0.1.0` | Win + Unix | Protocol | Protocol-ready — **not F5** |
+| Gemini CLI | *context generators* | workspace `0.1.0` | Win + Unix | Protocol | Protocol-ready — **not F5** |
+| OpenCode | *plugin hooks* | workspace `0.1.0` | Win + Unix | Protocol | Protocol-ready — **not F5** |
 
-**Vendor product E2E (GUI / real agent binary):** not yet filled — required for **F5 Pass (vendor)** and **P1-4** second-agent vendor claim. Fill a row with exact product version when a human or cloud agent runs a real install day.
+**Vendor product E2E (GUI / real agent binary):** not yet filled — **required for Must F5** and for **P1-4**. Protocol rows alone do not pass F5. Fill a row with exact product version when a human or cloud agent runs a real install day on Win and Unix.
 
 ## How to update
 

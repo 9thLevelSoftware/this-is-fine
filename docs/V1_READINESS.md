@@ -94,7 +94,7 @@ _
 | **F2** | Approval path blocks auto-apply | Sensitive path / `require_firebreak_approval` holds for approval; `tif approve` / `reject` work | QA | **B07** | **Pass** (automated) |
 | **F3** | Five-Alarm current-failure gate | Historical risk alone cannot escalate; clean-room omits prior patch content (tests + one manual) | TL | **B08, B09**; phase3 unit tests | **Pass** (automated) |
 | **F4** | Verification incomplete ≠ pass | Empty/unresolved required plan fails floor | TL | **A05** | **Pass** (automated) |
-| **F5** | At least one first-class agent adapter works E2E | Full lifecycle on **one** of Claude Code / Codex / Gemini / OpenCode on Win **and** Unix: begin → implement → complete → status | DX | **B12** + `adapter_conformance`; [VERSION_MATRIX](adapters/VERSION_MATRIX.md) **Pass (protocol)**. Vendor GUI still open. | **Pass (protocol)** |
+| **F5** | At least one first-class agent adapter works E2E | Full lifecycle on **one** of Claude Code / Codex / Gemini / OpenCode on Win **and** Unix: begin → implement → complete → status | DX | Protocol proxy ready: **B12** + `adapter_conformance` + [VERSION_MATRIX](adapters/VERSION_MATRIX.md). **Does not satisfy this Must** until one real host product is exercised on Win **and** Unix. | **In progress** |
 | **F6** | CLI is supportable | Core ops documented in user-guide; `--json` protocol matches `docs/protocol/v1.md` for operations used by adapters | DX | **B11, B14**; protocol doc | **Pass** (automated + docs) |
 
 ### 3.3 Quality & release engineering
@@ -123,7 +123,7 @@ _
 | **V1** | Controlled soak | ≥ **10 business days** (or ≥ **50** real coding tasks) on real repos with real agents; log incidents | QA / EM | AI substitute **C01 N=50** + Tiers A–D; CI `user-testing` uploads evidence pack | **Pass** (AI field battery; optional calendar soak residual) |
 | **V2** | Incident log empty of unfixed P0s | All soak P0s fixed or accepted with mitigation before tag | EM | C01 requires ≥98% / zero P0-style corruption; re-check issues at tag | **Pass** (battery); re-verify at tag |
 | **V3** | Recovery drill | Operator completes dual-failure / rollback drill using only user-guide; time-to-recover recorded | SRE | **B13** records `time_to_recover_ms` using documented rollback/status/audit | **Pass** (automated drill) |
-| **V4** | Support ownership named | On-call or support rota exists for apply/rollback incidents; contact path in README or user-guide | SRE | README + user-guide Support sections (GitHub Issues). **Human rota name still optional** | **Pass** (contact path); rota name residual |
+| **V4** | Support ownership named | On-call or support rota exists for apply/rollback incidents; contact path in README or user-guide | SRE | Contact path documented (README + user-guide → GitHub Issues). **Named rota / owner still required** for Pass. | **In progress** |
 
 ---
 
@@ -134,7 +134,7 @@ _
 | **P1-1** | **Signed releases** | Cosign or GPG signatures published with every `v*` release; verify steps in user-guide | REL | Workflow + user-guide; needs first signed tag dry-run | In progress |
 | **P1-2** | **Published package channel** | At least **one** of: Homebrew formula live, WinGet package live, or distro package — **or** explicit “binary-only v1.0” product decision signed by PM | REL / PM | **Binary-only v0.1/v1 candidate decision:** ship install scripts + GitHub Releases only; Homebrew/WinGet remain stubs (see ROADMAP). PM may waive to formalize. | **Waived** (binary-only; revisit package indexes) |
 | **P1-3** | Provider contract tests in CI | Mock + recorded/fixture HTTP contract tests for OpenAI-compatible response shape (no live keys required) | TL | `parse_chat_completion_content` / apply fixture tests in `providers` | **Pass** (automated) |
-| **P1-4** | Second agent adapter E2E | Second agent of the four launch set proven E2E on one OS | DX | All four have protocol installers + matrix; vendor day residual | Pass (protocol); vendor residual |
+| **P1-4** | Second agent adapter E2E | Second agent of the four launch set proven E2E on one OS | DX | Protocol installers + matrix for all four; vendor product E2E residual | In progress |
 | **P1-5** | aarch64 (or documented skip) | Release matrix cell green **or** “unsupported arch” listed in install docs | REL | `release.yml` builds `aarch64-unknown-linux-gnu` + `aarch64-apple-darwin` | **Pass** (release matrix) |
 | **P1-6** | Performance budgets recorded | Policy resolve p95 budget; assess on ≥10k-line diff budget; measured once on reference hardware | QA | **C03** (policy×100 + assess 10k lines); CI user-testing | **Pass** (smoke budgets) |
 | **P1-7** | Adapter version matrix | Table: agent product version × tested tif version × OS | DX | [adapters/VERSION_MATRIX.md](adapters/VERSION_MATRIX.md) | **Pass** (protocol rows); fill vendor versions later |
@@ -192,7 +192,7 @@ Minimum for **V1** Pass:
 |-----------|---------|
 | Duration | 10 business days **or** 50 tasks (whichever comes first may Pass if quality bar met; prefer both) |
 | Repos | ≥ 2 real projects (not only fixtures) **or** ≥ 2 multi-language fixture projects under [USER_TESTING.md](USER_TESTING.md) Tier C with documented AI soak substitute |
-| Agents | ≥ 1 first-class agent with real tasks **or** protocol lifecycle **F5 Pass (protocol)** + mock/process reviewer battery |
+| Agents | ≥ 1 first-class agent with real tasks (F5 Must). AI battery may substitute V1 soak volume, but does **not** by itself Pass F5. |
 | Reviewer mode | Start with **mock** or local process; introduce hosted only after 20 tasks clean |
 | Apply policy | Prefer approval-required for first week on shared repos |
 | Logging | Incident log with date, severity, repro, fix (see USER_TESTING evidence pack) |
@@ -277,15 +277,17 @@ Honest fill-in for planning (update as evidence lands):
 | Security review | **High (internal X2)** — formal pack + threat model; human countersign residual |
 | Support readiness | **Medium** — contact path documented; no 24×7 rota |
 
-**Residual before unconditional v1.0 marketing:**
+**Residual Must (blocks Ready):**
 
-1. Tag-time **Q3** (`1.0.0` + CHANGELOG section)  
-2. **Q4** install dry-run from a real GitHub Release  
-3. Optional **F5 Pass (vendor)** with a real agent product  
-4. Optional human SEC countersign on X2  
-5. **P1-1** first signed release dry-run (if claiming signed binaries)
+1. **F5** — real agent host E2E on Win **and** Unix (protocol battery is preparatory only)  
+2. **V4** — name a support / incident owner (contact path alone is not enough)  
+3. **Q2** — zero open P0 issues at go/no-go  
+4. **Q3** — tag `1.0.0` + CHANGELOG section  
+5. **Q4** — install dry-run from a real GitHub Release  
 
-**Implication:** Must (P0) automated evidence is largely **Pass**. Prefer messaging until tag dry-run:
+**Should residual:** P1-1 signed tag dry-run; human SEC countersign on X2; P1-4/P1-8 vendor/upgrade paths.
+
+**Implication:** Not Ready for unconditional v1.0 until F5 + V4 + tag-time Q items clear. Prefer messaging:
 
 > **v0.1 production candidate — AI field-validated; controlled rollout toward tagged v1.0.**
 
