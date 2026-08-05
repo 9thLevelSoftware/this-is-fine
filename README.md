@@ -35,13 +35,15 @@ This Is Fine is a **local-first** adaptive restraint and simplification system f
 
 ## Support / incidents (V4)
 
+**Owner:** **9thLevelSoftware** maintainers (repo admins).
+
 For **apply / rollback / dual-failure** incidents:
 
 1. Follow the recovery runbook in [`docs/user-guide.md`](docs/user-guide.md).  
 2. Open a GitHub issue on [9thLevelSoftware/this-is-fine](https://github.com/9thLevelSoftware/this-is-fine/issues) with label `incident` (or `P0` if data loss / silent bad apply).  
 3. Attach `tif audit --json` (redacted) and OS / `tif --version` when possible.
 
-**On-call rota:** not staffed as a 24×7 service for v0.1 — best-effort via GitHub issues. Name a human owner in `docs/V1_READINESS.md` before marketing unconditional production support.
+**Rota:** best-effort via GitHub Issues (not 24×7 SLA for v0.1).
 
 ## Features (current)
 

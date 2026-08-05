@@ -26,7 +26,25 @@ irm https://raw.githubusercontent.com/9thLevelSoftware/this-is-fine/main/scripts
 
 ```bash
 cargo install --path crates/tif
+# or:
+./scripts/install.sh --from-source --prefix ~/.local
 ```
+
+### Uninstall
+
+```bash
+./scripts/uninstall.sh --prefix ~/.local
+# optional: also remove local secrets dir
+./scripts/uninstall.sh --prefix ~/.local --purge-secrets
+```
+
+```powershell
+.\scripts\uninstall.ps1 -Prefix "$env:LOCALAPPDATA\this-is-fine"
+# optional:
+.\scripts\uninstall.ps1 -PurgeSecrets
+```
+
+Release dry-run checklist: [`RELEASE_DRY_RUN.md`](RELEASE_DRY_RUN.md).
 
 Package managers: Homebrew formula stub in [`dist/homebrew/this-is-fine.rb`](../dist/homebrew/this-is-fine.rb); WinGet notes in [`dist/winget/README.md`](../dist/winget/README.md).
 
@@ -91,11 +109,13 @@ In the TUI (`tif tui`): open **Firebreak**, select a run, `a` approve / `x` reje
 
 ## Support contact
 
-- **Primary:** GitHub Issues — https://github.com/9thLevelSoftware/this-is-fine/issues (label `incident` / `P0` for blockers)  
+- **Incident owner:** **9thLevelSoftware** maintainers (GitHub org / repo admins)  
+- **Primary channel:** GitHub Issues — https://github.com/9thLevelSoftware/this-is-fine/issues (label `incident` / `P0` for blockers)  
 - **Runbook:** this document (recovery sections below)  
 - **Security reports:** prefer private disclosure if available; otherwise open a security-labeled issue without secrets  
+- **Uninstall:** `scripts/uninstall.sh` / `scripts/uninstall.ps1` (optional `--purge-secrets` / `-PurgeSecrets` removes only `…/tif/secrets` credential dirs, not full config trees)
 
-v0.1 is best-effort community support, not a committed SLA.
+v0.1 is best-effort community support, not a committed 24×7 SLA.
 
 ## Recovery runbook
 
