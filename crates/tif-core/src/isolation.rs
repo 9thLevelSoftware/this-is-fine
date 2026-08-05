@@ -595,9 +595,20 @@ fn git(cwd: &Path, args: &[&str]) -> Result<std::process::ExitStatus> {
 ///
 /// Does **not** use lossy Unicode conversion: non-UTF-8 paths are left intact so
 /// `path_for_external_tool` can refuse them instead of handing git a mangled path.
+///
+/// UNC special-case: `\\?\UNC\server\share\...` → `\\server\share\...` (not a
+/// relative `UNC\...` path).
 fn normalize_for_external_tool(path: &Path) -> PathBuf {
     // Prefix strip only when the path is valid Unicode (Windows verbatim prefixes are ASCII).
     if let Some(s) = path.to_str() {
+        // Order matters: UNC verbatim before generic `\\?\`.
+        if let Some(rest) = s
+            .strip_prefix(r"\\?\UNC\")
+            .or_else(|| s.strip_prefix("//?/UNC/"))
+            .or_else(|| s.strip_prefix(r"//?/UNC\"))
+        {
+            return PathBuf::from(format!(r"\\{rest}"));
+        }
         let stripped = s
             .strip_prefix(r"\\?\")
             .or_else(|| s.strip_prefix("//?/"))

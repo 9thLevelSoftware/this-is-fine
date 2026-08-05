@@ -502,9 +502,30 @@ fn a08_symlink_candidate_rejected() {
         if applied {
             return Err(format!("symlink candidate applied: {}", fb.stdout));
         }
-        // Reject/error path is required (symlink roots must not silently no-op apply).
-        if fb.ok_envelope() && applied {
-            return Err("ok envelope with applied=true for symlink candidate".into());
+        // Stage/apply must error or report rejection — silent ok + applied=false is insufficient.
+        let rejected = !fb.ok_envelope()
+            || fb.status != 0
+            || fb
+                .json
+                .as_ref()
+                .and_then(|v| v.get("error"))
+                .and_then(|e| e.as_str())
+                .is_some_and(|e| {
+                    let l = e.to_lowercase();
+                    l.contains("symlink") || l.contains("candidate") || l.contains("isolation")
+                })
+            || (!fb.ok_envelope()
+                && (fb.stderr.to_lowercase().contains("symlink")
+                    || fb.stdout.to_lowercase().contains("symlink")
+                    || fb.stderr.to_lowercase().contains("candidate")));
+        if fb.ok_envelope() && fb.status == 0 {
+            return Err(format!(
+                "symlink candidate must fail stage/apply (got ok exit 0, applied={applied}): {}",
+                fb.summary()
+            ));
+        }
+        if !rejected && applied {
+            return Err(format!("symlink candidate applied: {}", fb.stdout));
         }
 
         let after = tree_hash_excluding(root, &["candidate_link"]).map_err(|e| e.to_string())?;
@@ -513,7 +534,12 @@ fn a08_symlink_candidate_rejected() {
                 "source tree mutated under symlink apply attempt\nbefore={before}\nafter={after}"
             ));
         }
-        Ok(format!("symlink candidate not applied; {}", fb.summary()))
+        Ok(format!(
+            "symlink candidate rejected (status={}, ok={}); {}",
+            fb.status,
+            fb.ok_envelope(),
+            fb.summary()
+        ))
     });
     assert_scenario(&r);
 }
