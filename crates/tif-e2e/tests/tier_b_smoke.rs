@@ -2,8 +2,8 @@
 
 use std::fs;
 use tif_e2e::{
-    copy_fixture, ensure_tif_built, git_init_commit, run_scenario, tif_json, tree_hash,
-    ScenarioResult,
+    assert_scenario, copy_fixture, ensure_tif_built, git_init_commit, run_scenario, tif_json,
+    tree_hash,
 };
 
 #[test]
@@ -628,12 +628,4 @@ fn b05_firebreak_fail_preserves_source() {
         Ok("failed firebreak preserved source".into())
     });
     assert_scenario(&r);
-}
-
-fn assert_scenario(r: &ScenarioResult) {
-    assert!(
-        r.pass,
-        "scenario {} failed ({}ms): {}\n{}",
-        r.id, r.duration_ms, r.notes, r.log
-    );
 }

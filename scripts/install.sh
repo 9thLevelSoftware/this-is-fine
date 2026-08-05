@@ -78,21 +78,18 @@ install_from_source() {
   echo "Installed tif to ${BIN_DIR}/tif"
 }
 
-sha256_file() {
-  local f="$1"
-  if command -v sha256sum >/dev/null 2>&1; then
-    sha256sum "$f" | awk '{print $1}'
-  else
-    shasum -a 256 "$f" | awk '{print $1}'
-  fi
-}
+# Shared local SUMS verification (also used by e2e Tier D via scripts/lib/sha256-verify.sh).
+# shellcheck source=lib/sha256-verify.sh
+_TIF_INSTALL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck disable=SC1091
+source "${_TIF_INSTALL_DIR}/lib/sha256-verify.sh"
 
 verify_asset() {
   local asset_path="$1"
   local asset_name="$2"
   local version="$3"
   local tmp="$4"
-  local sums_url sums expected actual
+  local sums_url sums
 
   if [[ "${SKIP_VERIFY}" -eq 1 ]]; then
     echo "WARNING: skipping SHA-256 verification (--skip-verify)" >&2
@@ -108,24 +105,9 @@ verify_asset() {
     return 1
   fi
 
-  # Lines look like: <hex>  <filename>  or <hex> *filename
-  expected="$(grep -E "[[:space:]]${asset_name}\$" "${sums}" | head -n1 | awk '{print $1}')"
-  if [[ -z "${expected}" ]]; then
-    # Try matching basename only if path-style
-    expected="$(awk -v n="${asset_name}" '$2 == n || $2 == "*"n || $NF == n { print $1; exit }' "${sums}")"
-  fi
-  if [[ -z "${expected}" ]]; then
-    echo "ERROR: ${asset_name} not listed in SHA256SUMS" >&2
+  if ! verify_against_sums "${asset_path}" "${asset_name}" "${sums}"; then
     return 1
   fi
-  actual="$(sha256_file "${asset_path}")"
-  if [[ "${actual}" != "${expected}" ]]; then
-    echo "ERROR: checksum mismatch for ${asset_name}" >&2
-    echo "  expected: ${expected}" >&2
-    echo "  actual:   ${actual}" >&2
-    return 1
-  fi
-  echo "SHA-256 OK (${actual})"
 
   if [[ "${TIF_REQUIRE_COSIGN:-0}" == "1" ]]; then
     if ! command -v cosign >/dev/null 2>&1; then

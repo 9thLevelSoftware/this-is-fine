@@ -3,22 +3,23 @@
 use std::fs;
 use std::time::Instant;
 use tif_e2e::{
-    copy_fixture, ensure_tif_built, git_init_commit, run_scenario, tif_json, ScenarioResult,
+    assert_scenario, copy_fixture, ensure_tif_built, git_init_commit, run_scenario, tif_json,
 };
 
-/// C01: ≥50 scripted tasks across fixtures × fire levels × plant styles.
+/// C01: ≥50 scripted tasks — full combinatorial diversity (no pad reruns).
+/// 2 fixtures × 4 fire levels × 5 plants × 2 approval = 80 unique combos; run first 50.
 #[test]
 fn c01_task_battery_fifty() {
     ensure_tif_built();
     let r = run_scenario("C01", || {
         let fixtures = ["rust-mini", "js-mini"];
         let fire_levels = [1u8, 2, 3, 4];
-        let plants = ["minimal", "bloat", "none"];
+        // Five plants → 2×4×5×2 = 80 unique matrix cells (no padding required for N=50).
+        let plants = ["minimal", "bloat", "none", "inflate", "fail"];
         let mut n = 0u32;
         let mut fails = 0u32;
         let mut notes = Vec::new();
 
-        // Generate combinations until N≥50 with diversity.
         'outer: for fixture in fixtures {
             for &level in &fire_levels {
                 for plant in plants {
@@ -38,16 +39,11 @@ fn c01_task_battery_fifty() {
                 }
             }
         }
-        // Pad remaining with simple contained tasks if under 50.
-        while n < 50 {
-            match run_one_task("rust-mini", 3, "minimal", false) {
-                Ok(msg) => notes.push(format!("ok#{n}:{msg}")),
-                Err(e) => {
-                    fails += 1;
-                    notes.push(format!("fail#{n}:{e}"));
-                }
-            }
-            n += 1;
+
+        if n < 50 {
+            return Err(format!(
+                "matrix produced only {n} tasks; need ≥50 unique combos"
+            ));
         }
 
         let pass_rate = (n - fails) as f64 / n as f64;
@@ -63,9 +59,8 @@ fn c01_task_battery_fifty() {
                     .join("; ")
             ));
         }
-        // Zero P0: any data-loss style fail is a hard fail — already counted.
         Ok(format!(
-            "N={n} fails={fails} pass_rate={pass_rate:.3} (AI soak substitute)"
+            "N={n} unique fails={fails} pass_rate={pass_rate:.3} (AI soak substitute)"
         ))
     });
     assert_scenario(&r);
@@ -75,56 +70,81 @@ fn c01_task_battery_fifty() {
 fn c02_concurrent_apply_lock() {
     ensure_tif_built();
     let r = run_scenario("C02", || {
-        // Sequential stress of apply path with shared lockfile expectations.
-        // Two sequential OOC applies on separate repos must both succeed; on one repo
-        // back-to-back completes must not corrupt trees.
-        let mut ok = 0;
-        for i in 0..5 {
-            let tmp = copy_fixture("rust-mini").map_err(|e| e.to_string())?;
-            let root = tmp.path();
-            fs::write(root.join("TIF_MOCK_REDUCE"), vec![b'X'; 25_000])
-                .map_err(|e| e.to_string())?;
-            git_init_commit(root).map_err(|e| e.to_string())?;
-            let begin = tif_json(
-                root,
-                &[
-                    "run",
-                    "begin",
-                    "--task",
-                    &format!("concurrent {i}"),
-                    "--force",
-                ],
-            )
-            .map_err(|e| e.to_string())?;
-            let id = begin.data_str("run_id").ok_or_else(|| begin.summary())?;
-            let complete = tif_json(
-                root,
-                &[
-                    "run",
-                    "complete",
-                    &id,
-                    "--deps-added",
-                    "1",
-                    "--files-added",
-                    "2",
-                    "--lines-added",
-                    "80",
-                    "--auto-firebreak",
-                    "--verification-passed",
-                    "true",
-                ],
-            )
-            .map_err(|e| e.to_string())?;
-            if !complete.ok_envelope() {
-                return Err(format!("task {i}: {}", complete.summary()));
+        // Real concurrency: 5 parallel OOC Firebreak applies on separate temp repos.
+        use std::sync::Mutex;
+        let errors: Mutex<Vec<String>> = Mutex::new(Vec::new());
+        let ok_count: Mutex<u32> = Mutex::new(0);
+
+        std::thread::scope(|scope| {
+            for i in 0..5 {
+                let errors = &errors;
+                let ok_count = &ok_count;
+                scope.spawn(move || {
+                    let result = (|| -> Result<(), String> {
+                        let tmp = copy_fixture("rust-mini").map_err(|e| e.to_string())?;
+                        let root = tmp.path().to_path_buf();
+                        fs::write(root.join("TIF_MOCK_REDUCE"), vec![b'X'; 25_000])
+                            .map_err(|e| e.to_string())?;
+                        git_init_commit(&root).map_err(|e| e.to_string())?;
+                        let begin = tif_json(
+                            &root,
+                            &[
+                                "run",
+                                "begin",
+                                "--task",
+                                &format!("concurrent {i}"),
+                                "--force",
+                            ],
+                        )
+                        .map_err(|e| e.to_string())?;
+                        let id = begin.data_str("run_id").ok_or_else(|| begin.summary())?;
+                        let complete = tif_json(
+                            &root,
+                            &[
+                                "run",
+                                "complete",
+                                &id,
+                                "--deps-added",
+                                "1",
+                                "--files-added",
+                                "2",
+                                "--lines-added",
+                                "80",
+                                "--auto-firebreak",
+                                "--verification-passed",
+                                "true",
+                            ],
+                        )
+                        .map_err(|e| e.to_string())?;
+                        if !complete.ok_envelope() {
+                            return Err(format!("task {i}: {}", complete.summary()));
+                        }
+                        if !root.join("src/lib.rs").is_file() {
+                            return Err(format!("task {i}: source corrupted"));
+                        }
+                        Ok(())
+                    })();
+                    match result {
+                        Ok(()) => *ok_count.lock().unwrap() += 1,
+                        Err(e) => errors.lock().unwrap().push(e),
+                    }
+                });
             }
-            // Tree must remain readable.
-            if !root.join("src/lib.rs").is_file() {
-                return Err(format!("task {i}: source corrupted"));
-            }
-            ok += 1;
+        });
+
+        let errs = errors.into_inner().unwrap();
+        let ok = *ok_count.lock().unwrap();
+        if !errs.is_empty() {
+            return Err(format!(
+                "concurrent applies failed ({}/5 ok): {}",
+                ok,
+                errs.join("; ")
+            ));
         }
-        Ok(format!("concurrent-safe sequential applies ok={ok}/5"))
+        if ok != 5 {
+            return Err(format!("expected 5 ok concurrent applies, got {ok}"));
+        }
+        Ok(format!("concurrent applies ok={ok}/5 (thread::scope)"))
     });
     assert_scenario(&r);
 }
@@ -208,6 +228,15 @@ fn run_one_task(
             fs::write(root.join("TIF_MOCK_REDUCE"), vec![b'X'; 15_000])
                 .map_err(|e| e.to_string())?;
         }
+        "inflate" => {
+            fs::write(root.join("TIF_MOCK_INFLATE"), "BLOAT\n".repeat(40))
+                .map_err(|e| e.to_string())?;
+        }
+        "fail" => {
+            fs::write(root.join("TIF_MOCK_REDUCE"), vec![b'X'; 12_000])
+                .map_err(|e| e.to_string())?;
+            fs::write(root.join("TIF_MOCK_FAIL"), b"1").map_err(|e| e.to_string())?;
+        }
         "minimal" => {
             if root.join("src/lib.rs").is_file() {
                 let mut b =
@@ -245,7 +274,7 @@ fn run_one_task(
     let run_id = begin.data_str("run_id").ok_or("no run_id")?;
 
     let mut args: Vec<&str> = vec!["run", "complete", &run_id, "--verification-passed", "true"];
-    if plant == "bloat" {
+    if matches!(plant, "bloat" | "inflate" | "fail") {
         args.extend_from_slice(&[
             "--deps-added",
             "1",
@@ -275,12 +304,4 @@ fn run_one_task(
     Ok(format!(
         "{fixture}/fl{fire_level}/{plant}/appr={require_approval}→{state}"
     ))
-}
-
-fn assert_scenario(r: &ScenarioResult) {
-    assert!(
-        r.pass,
-        "scenario {} failed ({}ms): {}\n{}",
-        r.id, r.duration_ms, r.notes, r.log
-    );
 }

@@ -3,7 +3,7 @@
 use std::fs;
 use std::path::Path;
 use tif_e2e::{
-    copy_fixture, ensure_tif_built, git_init_commit, run_scenario, tif_json, ScenarioResult,
+    assert_scenario, copy_fixture, ensure_tif_built, git_init_commit, run_scenario, tif_json,
 };
 
 #[test]
@@ -139,6 +139,27 @@ fn b03_refactor_expands_scope() {
 fn b04_security_must_not_strip_validation() {
     ensure_tif_built();
     let r = run_scenario("B04", || {
+        use tif_core::scoring::{CorrectnessFloor, DiffMetrics, SimplicityScorer};
+
+        // --- Core floor: stripped validation always disqualifies ---
+        let scorer = SimplicityScorer::new(Default::default(), Default::default());
+        let mut floor = CorrectnessFloor::all_pass();
+        floor.validation_preserved = false;
+        let scored = scorer.score(
+            &DiffMetrics {
+                lines_added: 1,
+                files_changed: 1,
+                ..Default::default()
+            },
+            &floor,
+        );
+        if !scored.disqualified || scored.correctness_passed {
+            return Err(format!(
+                "core floor must disqualify validation_preserved=false: {scored:?}"
+            ));
+        }
+
+        // --- CLI: strip validation, then refuse as failed verification (not clean contained) ---
         let tmp = copy_fixture("security-sensitive").map_err(|e| e.to_string())?;
         let root = tmp.path();
         git_init_commit(root).map_err(|e| e.to_string())?;
@@ -156,32 +177,81 @@ fn b04_security_must_not_strip_validation() {
         .map_err(|e| e.to_string())?;
         let run_id = begin.data_str("run_id").ok_or_else(|| begin.summary())?;
 
-        // Strip validation (dangerous "minimalism").
-        fs::write(
-            root.join("src/auth/login.rs"),
-            r#"//! validation stripped by bad simplification
+        let stripped = r#"//! validation stripped by bad simplification
 pub fn validate_password(_password: &str) -> bool { true }
 pub fn login(_user: &str, _password: &str) -> Result<(), &'static str> { Ok(()) }
-"#,
-        )
-        .map_err(|e| e.to_string())?;
+"#;
+        fs::write(root.join("src/auth/login.rs"), stripped).map_err(|e| e.to_string())?;
 
-        // Force Firebreak with mock that would try to apply reduce — but floor on validation
-        // is assessed at complete. Without floor signal on validation_preserved from CLI metrics,
-        // we still ensure auto firebreak cannot apply a worse tree when we plant TIF_MOCK_FAIL
-        // after strip, OR we score the strip as OOC and ensure applied=false for inflate.
-        // Use OOC + inflate so candidate is larger → not applied; original (stripped) is
-        // "current" — product correctness floor for validation is primarily unit-tested.
-        // Here: refuse apply of larger candidate after security surface change.
-        fs::write(root.join("TIF_MOCK_INFLATE"), "BLOAT\n".repeat(80))
-            .map_err(|e| e.to_string())?;
-
-        let complete = tif_json(
+        // Operator/agent marks verification failed after discovering validation removed.
+        let refused = tif_json(
             root,
             &[
                 "run",
                 "complete",
                 &run_id,
+                "--files-changed",
+                "1",
+                "--lines-added",
+                "5",
+                "--verification-passed",
+                "false",
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+        if !refused.ok_envelope() {
+            return Err(format!("complete after strip: {}", refused.summary()));
+        }
+        let assessment = refused
+            .data()
+            .and_then(|d| d.get("assessment"))
+            .ok_or_else(|| format!("missing assessment: {}", refused.stdout))?;
+        let status = assessment
+            .get("status")
+            .and_then(|s| s.as_str())
+            .unwrap_or("");
+        let floor_ok = assessment
+            .get("correctness")
+            .and_then(|c| c.get("verification_passed"))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true);
+        if floor_ok || status == "contained" {
+            return Err(format!(
+                "stripped validation with failed verify must not be clean contained; status={status} floor_ok={floor_ok} out={}",
+                refused.stdout
+            ));
+        }
+        let applied_refuse = refused
+            .data()
+            .and_then(|d| d.get("firebreak"))
+            .and_then(|f| f.get("applied"))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        if applied_refuse {
+            return Err("must not Firebreak-apply after refused security change".into());
+        }
+
+        // --- CLI: larger Firebreak candidate over security surface must not apply ---
+        let begin2 = tif_json(
+            root,
+            &[
+                "run",
+                "begin",
+                "--task",
+                "retry security simplify",
+                "--force",
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+        let run_id2 = begin2.data_str("run_id").ok_or_else(|| begin2.summary())?;
+        fs::write(root.join("TIF_MOCK_INFLATE"), "BLOAT\n".repeat(80))
+            .map_err(|e| e.to_string())?;
+        let complete = tif_json(
+            root,
+            &[
+                "run",
+                "complete",
+                &run_id2,
                 "--deps-added",
                 "1",
                 "--files-added",
@@ -194,7 +264,6 @@ pub fn login(_user: &str, _password: &str) -> Result<(), &'static str> { Ok(()) 
             ],
         )
         .map_err(|e| e.to_string())?;
-
         let applied = complete
             .data()
             .and_then(|d| d.get("firebreak"))
@@ -203,16 +272,22 @@ pub fn login(_user: &str, _password: &str) -> Result<(), &'static str> { Ok(()) 
             .unwrap_or(false);
         if applied {
             return Err(format!(
-                "must not apply larger/untrusted firebreak over security surface: {}",
+                "must not apply larger firebreak over security surface: {}",
                 complete.stdout
             ));
         }
         if root.join("TIF_MOCK_BLOAT.txt").exists() {
             return Err("inflate bloat leaked into source".into());
         }
-        // Stripped validation remains the operator problem until a floor-aware plant;
-        // safety property here: Firebreak did not silently rewrite auth with larger candidate.
-        Ok("security surface: larger candidate not applied".into())
+        let login =
+            fs::read_to_string(root.join("src/auth/login.rs")).map_err(|e| e.to_string())?;
+        if !login.contains("validation stripped") {
+            return Err("auth login unexpectedly rewritten".into());
+        }
+
+        Ok(format!(
+            "floor disqualifies stripped validation; CLI refuse status={status}; no larger apply"
+        ))
     });
     assert_scenario(&r);
 }
@@ -632,12 +707,4 @@ fn ooc_auto(root: &Path, task: &str) -> Result<tif_e2e::TifOutput, String> {
         ],
     )
     .map_err(|e| e.to_string())
-}
-
-fn assert_scenario(r: &ScenarioResult) {
-    assert!(
-        r.pass,
-        "scenario {} failed ({}ms): {}\n{}",
-        r.id, r.duration_ms, r.notes, r.log
-    );
 }

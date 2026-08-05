@@ -15,8 +15,8 @@ use tif_core::providers::context::{
 use tif_core::scoring::{select_smaller_verified, CorrectnessFloor, DiffMetrics, SimplicityScorer};
 use tif_core::task::TaskCategory;
 use tif_e2e::{
-    copy_fixture, ensure_tif_built, git_init_commit, run_scenario, tif_json, tree_hash,
-    tree_hash_excluding, ScenarioResult,
+    assert_scenario, copy_fixture, ensure_tif_built, git_init_commit, run_scenario, tif_json,
+    tree_hash, tree_hash_excluding,
 };
 
 /// Serialize A07 so process-global env mutations cannot race siblings.
@@ -787,12 +787,4 @@ impl Drop for EnvVarGuard {
             None => std::env::remove_var(&self.key),
         }
     }
-}
-
-fn assert_scenario(r: &ScenarioResult) {
-    assert!(
-        r.pass,
-        "scenario {} failed ({}ms): {}\n{}",
-        r.id, r.duration_ms, r.notes, r.log
-    );
 }
