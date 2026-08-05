@@ -203,6 +203,7 @@ pub struct ReviewerConfig {
     pub model: String,
     #[serde(default)]
     pub endpoint: Option<String>,
+    /// Credential reference: `ENV_NAME`, `env:ENV_NAME`, or `file:/path/to/secret`.
     #[serde(default)]
     pub credential_ref: Option<String>,
     /// Hosted source egress requires explicit opt-in (local-first default: false).
@@ -214,10 +215,55 @@ pub struct ReviewerConfig {
     pub max_firebreak_attempts: u32,
     #[serde(default)]
     pub priority: i32,
+    /// Request timeout for HTTP/process backends (seconds).
+    #[serde(default = "default_reviewer_timeout_secs")]
+    pub timeout_secs: u64,
+    /// Soft max input tokens (advisory for context packaging).
+    #[serde(default)]
+    pub max_input_tokens: Option<u64>,
+    /// Soft max output tokens for provider requests.
+    #[serde(default)]
+    pub max_output_tokens: Option<u64>,
+    /// Max bytes of context body (prompts + optional source) before truncation.
+    #[serde(default = "default_max_context_bytes")]
+    pub max_context_bytes: u64,
+    /// For `provider = "process"`: argv to invoke (placeholders: `{isolation}`, `{request_json}`).
+    #[serde(default)]
+    pub process_argv: Option<Vec<String>>,
 }
 
 fn default_max_firebreak_attempts() -> u32 {
     2
+}
+
+fn default_reviewer_timeout_secs() -> u64 {
+    120
+}
+
+fn default_max_context_bytes() -> u64 {
+    256_000
+}
+
+impl ReviewerConfig {
+    /// Construct a minimal authorized reviewer (tests / defaults).
+    pub fn mock(id: &str, priority: i32) -> Self {
+        Self {
+            id: id.into(),
+            provider: "mock".into(),
+            model: id.into(),
+            endpoint: None,
+            credential_ref: None,
+            allow_source_egress: false,
+            eligible_task_types: vec![],
+            max_firebreak_attempts: default_max_firebreak_attempts(),
+            priority,
+            timeout_secs: default_reviewer_timeout_secs(),
+            max_input_tokens: None,
+            max_output_tokens: None,
+            max_context_bytes: default_max_context_bytes(),
+            process_argv: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -642,13 +688,33 @@ pub fn default_local_toml() -> String {
 version = 1
 
 # Authorized Firebreak reviewers (user must explicitly authorize each model).
+# Offline mock (safe for tif reviewer test / CI):
 # [[reviewers]]
-# id = "local-default"
-# provider = "cli"
-# model = "example-model"
+# id = "local-mock"
+# provider = "mock"
+# model = "fixture"
 # allow_source_egress = false
-# max_firebreak_attempts = 2
+# priority = 100
+
+# OpenAI-compatible hosted example (egress stays false by default):
+# [[reviewers]]
+# id = "hosted"
+# provider = "openai_compatible"
+# model = "gpt-4.1-mini"
+# endpoint = "https://api.openai.com/v1"
+# credential_ref = "env:TIF_REVIEWER_API_KEY"
+# allow_source_egress = false
+# timeout_secs = 120
+# max_output_tokens = 4096
 # priority = 10
+
+# Local process backend:
+# [[reviewers]]
+# id = "local-cli"
+# provider = "process"
+# model = "custom"
+# process_argv = ["my-reviewer", "--isolation", "{isolation}", "--request", "{request_json}"]
+# allow_source_egress = false
 "#
     .to_string()
 }

@@ -9,6 +9,7 @@ use crate::config::Config;
 use crate::error::{Result, TifError};
 use crate::fire_level::FireLevel;
 use crate::firebreak::{FirebreakEngine, FirebreakOutcome, FirebreakRequest};
+use crate::isolation::IsolationSession;
 use crate::policy::{ContainmentPolicy, PolicyCompileRequest, PolicyCompiler};
 use crate::reviewer::ReviewerSelector;
 use crate::scoring::{CorrectnessFloor, DiffMetrics, ScoreResult, SimplicityScorer};
@@ -122,6 +123,8 @@ impl RunState {
                 | (AwaitingApproval, Applied)
                 | (AwaitingApproval, Restored)
                 | (Applied, Closed)
+                // Rollback after successful Firebreak apply.
+                | (Applied, Restored)
                 | (Restored, Closed)
                 | (Rejected, Closed)
                 | (Failed, Closed)
@@ -151,6 +154,9 @@ pub struct RunRecord {
     pub assessment: Option<DamageAssessment>,
     pub firebreak: Option<FirebreakOutcome>,
     pub rollback_candidate_id: Option<String>,
+    /// Isolation session for Firebreak apply/rollback (filesystem-backed).
+    #[serde(default)]
+    pub isolation_session: Option<IsolationSession>,
     pub error: Option<String>,
     pub events: Vec<String>,
 }
@@ -174,6 +180,7 @@ impl RunRecord {
             assessment: None,
             firebreak: None,
             rollback_candidate_id: None,
+            isolation_session: None,
             error: None,
             events: vec!["run created".into()],
         }
@@ -375,6 +382,9 @@ impl RunOrchestrator {
     }
 
     /// Run Firebreak against an out-of-control but correct implementation.
+    ///
+    /// Production path is fail-closed (no reviewer backend). For real apply, use
+    /// `run_firebreak_isolated` after staging a re-verified candidate tree.
     pub fn run_firebreak(
         &self,
         config: &Config,
@@ -408,6 +418,76 @@ impl RunOrchestrator {
             workspace_apply_authorized: false,
         })?;
 
+        self.finalize_firebreak(run, outcome)
+    }
+
+    /// Run Firebreak with a re-verified isolated candidate and optional apply.
+    pub fn run_firebreak_isolated(
+        &self,
+        config: &Config,
+        run: &mut RunRecord,
+        params: IsolatedFirebreakParams<'_>,
+    ) -> Result<()> {
+        if run.state != RunState::FirebreakRunning {
+            run.transition(RunState::FirebreakRunning)?;
+        }
+
+        let policy = run
+            .policy
+            .clone()
+            .ok_or_else(|| TifError::Other("run missing policy".into()))?;
+        let metrics = params
+            .ranking_original_metrics
+            .clone()
+            .or_else(|| run.metrics.clone())
+            .unwrap_or_default();
+        let original_score = params
+            .ranking_original_score
+            .clone()
+            .or_else(|| run.score.clone())
+            .ok_or_else(|| TifError::Other("run missing score".into()))?;
+
+        // Always attach session before apply so emergency rollback can find baseline
+        // even if apply I/O fails (partial apply / dual-failure sticky flags).
+        run.isolation_session = Some(params.session.clone());
+
+        let selector = ReviewerSelector::new(config.reviewers.clone());
+        let engine = FirebreakEngine::new(selector);
+        let apply_result = engine.apply_isolated_candidate(
+            crate::firebreak::IsolatedApplyRequest {
+                run_id: run.id.as_str().to_string(),
+                policy,
+                original_metrics: metrics,
+                original_score,
+                original_floor: params.original_floor.clone(),
+                candidate_metrics: params.candidate_metrics,
+                candidate_floor: params.candidate_floor,
+                authorize_apply: params.authorize_apply,
+                force_approval: false,
+            },
+            params.isolator,
+            params.session,
+        );
+
+        // Re-attach session after apply (baseline_path / applied / restore_pending).
+        run.isolation_session = Some(params.session.clone());
+
+        match apply_result {
+            Ok(outcome) => self.finalize_firebreak(run, outcome),
+            Err(e) => {
+                run.events
+                    .push(format!("isolated firebreak apply error: {e}"));
+                // Session remains on the run (with applied/restore_pending sticky flags)
+                // so `tif rollback` can retry. Prefer Failed over a false "restored".
+                if run.state == RunState::FirebreakRunning {
+                    run.fail(format!("isolated firebreak apply error: {e}"));
+                }
+                Err(e)
+            }
+        }
+    }
+
+    fn finalize_firebreak(&self, run: &mut RunRecord, outcome: FirebreakOutcome) -> Result<()> {
         run.firebreak = Some(outcome.clone());
         run.transition(RunState::CandidateComparing)?;
 
@@ -433,6 +513,12 @@ impl RunOrchestrator {
                     .unwrap_or_else(|| "firebreak".into());
                 a.summary = format!("Firebreak applied · {}", outcome.message);
                 a.status = AssessmentStatus::Contained;
+                if let Some(ref m) = outcome.candidate_metrics {
+                    a.metrics = m.clone();
+                }
+                if let Some(ref s) = outcome.candidate_score {
+                    a.score = s.clone();
+                }
             }
             return Ok(());
         }
@@ -441,8 +527,44 @@ impl RunOrchestrator {
         run.rollback_candidate_id = Some("original".into());
         run.transition(RunState::Restored)?;
         if let Some(ref mut a) = run.assessment {
-            a.rollback_available = false;
+            a.rollback_available = run.isolation_session.as_ref().is_some_and(|s| s.applied);
             a.summary = format!("Firebreak did not replace original · {}", outcome.message);
+        }
+        Ok(())
+    }
+
+    /// Restore the original workspace after a successful or partial Firebreak apply.
+    pub fn rollback_isolation(
+        &self,
+        run: &mut RunRecord,
+        isolator: &dyn crate::isolation::Isolator,
+    ) -> Result<()> {
+        let Some(mut session) = run.isolation_session.clone() else {
+            return Err(TifError::Isolation(
+                "no isolation session recorded for this run; cannot restore files".into(),
+            ));
+        };
+        if !session.applied && !session.restore_pending {
+            run.events
+                .push("rollback: isolation session not applied (original already intact)".into());
+            run.isolation_session = Some(session);
+            return Ok(());
+        }
+        isolator.restore_source(&mut session)?;
+        run.isolation_session = Some(session);
+        run.rollback_candidate_id = Some("original".into());
+        run.events
+            .push("filesystem rollback restored original from baseline".into());
+        if run.state == RunState::Applied || run.state == RunState::CandidateComparing {
+            let _ = run.transition(RunState::Restored);
+        } else {
+            run.state = RunState::Restored;
+            run.updated_at = Utc::now();
+        }
+        if let Some(ref mut a) = run.assessment {
+            a.rollback_available = false;
+            a.summary = "Rolled back to original implementation".into();
+            a.candidate_id = "original".into();
         }
         Ok(())
     }
@@ -481,6 +603,20 @@ pub struct BeginRunRequest {
     pub agent_id: Option<String>,
     pub model_id: Option<String>,
     pub force: bool,
+}
+
+/// Parameters for isolation-backed Firebreak apply.
+pub struct IsolatedFirebreakParams<'a> {
+    pub original_floor: &'a CorrectnessFloor,
+    pub isolator: &'a dyn crate::isolation::Isolator,
+    pub session: &'a mut IsolationSession,
+    pub candidate_metrics: DiffMetrics,
+    pub candidate_floor: CorrectnessFloor,
+    pub authorize_apply: bool,
+    /// When set (with [`Self::ranking_original_score`]), override run metrics for
+    /// ranking so both sides use the same measurement kind (e.g. absolute tree weight).
+    pub ranking_original_metrics: Option<DiffMetrics>,
+    pub ranking_original_score: Option<ScoreResult>,
 }
 
 #[cfg(test)]
@@ -552,17 +688,8 @@ mod tests {
         let mut cfg = Config::default();
         cfg.simplicity.limits.new_runtime_dependencies = Some(0);
         // authorize a reviewer for firebreak
-        cfg.reviewers.push(crate::config::ReviewerConfig {
-            id: "r1".into(),
-            provider: "mock".into(),
-            model: "mock-model".into(),
-            endpoint: None,
-            credential_ref: None,
-            allow_source_egress: false,
-            eligible_task_types: vec![],
-            max_firebreak_attempts: 2,
-            priority: 1,
-        });
+        cfg.reviewers
+            .push(crate::config::ReviewerConfig::mock("r1", 1));
 
         let orch = RunOrchestrator::new();
         let mut run = orch

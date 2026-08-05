@@ -147,6 +147,26 @@ impl DamageAssessor {
             changed_paths: Vec::new(),
         }
     }
+
+    /// Enrich a damage assessment with path lists derived from metrics.
+    pub fn attach_paths(
+        mut assessment: DamageAssessment,
+        files_added: Vec<String>,
+        files_changed: Vec<String>,
+        files_deleted: Vec<String>,
+    ) -> DamageAssessment {
+        assessment.files_added = files_added;
+        assessment.files_changed = files_changed;
+        assessment.files_deleted = files_deleted;
+        if assessment.metrics.changed_paths.is_empty() {
+            let mut paths = Vec::new();
+            paths.extend(assessment.files_added.iter().cloned());
+            paths.extend(assessment.files_changed.iter().cloned());
+            paths.extend(assessment.files_deleted.iter().cloned());
+            assessment.metrics.changed_paths = paths;
+        }
+        assessment
+    }
 }
 
 #[cfg(test)]

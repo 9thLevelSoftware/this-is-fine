@@ -1,0 +1,37 @@
+{
+  "name": "this-is-fine",
+  "version": "0.1.0",
+  "description": "This Is Fine containment bridge for OpenCode",
+  "protocol_version": 1,
+  "commands": {
+    "tif.on": ["tif", "on"],
+    "tif.off": ["tif", "off"],
+    "tif.status": ["tif", "status", "--json"],
+    "tif.policy": ["tif", "policy", "resolve", "--json"],
+    "tif.begin": ["tif", "run", "begin", "--json", "--agent", "opencode"],
+    "tif.complete": ["tif", "run", "complete", "--json", "--from-git"],
+    "tif.assess": ["tif", "assess", "--json", "--from-git"],
+    "tif.firebreak": ["tif", "firebreak", "--json"],
+    "tif.rollback": ["tif", "rollback", "--json"],
+    "tif.verify": ["tif", "verify", "--json"]
+  },
+  "hooks": {
+    "session.start": {
+      "argv": ["tif", "run", "begin", "--json", "--agent", "opencode", "--task", "${TASK}"],
+      "wrapper": "hooks/tif-begin.sh",
+      "inject": "policy.pressure.body",
+      "note": "Host must pass argv arrays without shell interpolation. Prefer the wrapper script which quotes safely."
+    },
+    "session.end": {
+      "argv": ["tif", "run", "complete", "--json", "${RUN_ID}", "--from-git"],
+      "wrapper": "hooks/tif-complete.sh",
+      "note": "Do not expand ${RUN_ID} through a shell. Pass as a single argv element."
+    }
+  },
+  "notes": [
+    "Adapters must not authorize new hosted reviewer models.",
+    "Fail closed when protocol_version is unsupported.",
+    "Every action has a CLI equivalent.",
+    "SECURITY: hosts MUST invoke via argv arrays (no shell). Task text with quotes/metacharacters must not be interpolated into a shell string. Use wrappers under hooks/ when the host only supports shell commands."
+  ]
+}

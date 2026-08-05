@@ -88,7 +88,11 @@ pub struct FireLevelResult {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RollbackResult {
     pub run_id: String,
+    /// True only when filesystem restore from baseline actually ran successfully.
     pub restored: bool,
+    /// Machine-readable detail: `restored`, `never_applied`, `noop`, etc.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
     pub message: String,
 }
 
