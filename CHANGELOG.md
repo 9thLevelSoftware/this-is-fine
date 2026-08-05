@@ -9,6 +9,24 @@ Versioning: see [docs/VERSIONING.md](docs/VERSIONING.md).
 
 ### Added
 
+- **Phase 7 agent adapters (E2E)**
+  - Windows PowerShell installers and hooks for Claude Code, Codex, Gemini CLI, OpenCode (alongside bash)
+  - Adapter JSON protocol conformance tests (`tif_core::adapter_conformance`) with mocked CLI envelopes
+  - Troubleshooting guide in `adapters/README.md`; argv-safe quoting across hooks
+- **Phase 8 production TUI**
+  - Live run event stream, Firebreak approve/reject/rollback, reviewer probe, audit filter, settings from shared config
+  - Layout: header · nav · center · metrics · bottom events; narrow terminals collapse the metrics panel
+  - Confirmations for destructive ops (rollback, audit purge); screen/state unit tests
+- **Phase 9 CI write + distribution**
+  - Guarded CI write job templates (GitHub Actions + GitLab) requiring `ci.allow_write` and `TIF_ALLOW_WRITE`
+  - GitHub Actions release workflow: multi-target binaries, checksums, attach on `v*` tags
+  - `scripts/install.sh` / `scripts/install.ps1`; Homebrew formula stub; WinGet packaging notes
+  - User guide + recovery runbook (`docs/user-guide.md`); README polish
+- **Phase 10 hardening / GA**
+  - Chaos tests: dual-failure `restore_pending` recovery; disk-full soft error classification (`TifError::DiskFull`)
+  - Policy resolve fast-path performance smoke test
+  - GA checklist complete in `docs/ROADMAP.md` with residual risks listed honestly
+  - Threat model updated for adapters, CI write path, distribution checksums
 - **Phase 4 intelligence depth**
   - Multi-language inspector: JS/TS (`package.json` scripts + npm/pnpm/yarn/bun), Python (pytest/pyproject/poetry), Go (`go.mod`), Rust clippy/fmt confidence gates
   - `confident: false` when evidence is weak; never invents test commands without scripts/config

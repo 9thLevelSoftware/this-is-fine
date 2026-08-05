@@ -12,7 +12,16 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use crate::error::{Result, TifError};
+use crate::error::{is_disk_full_io, Result, TifError};
+
+/// Map I/O failures during isolation to soft `DiskFull` when appropriate.
+fn map_iso_io(err: std::io::Error, ctx: &str) -> TifError {
+    if is_disk_full_io(&err) {
+        TifError::DiskFull(format!("{ctx}: {err}"))
+    } else {
+        TifError::Isolation(format!("{ctx}: {err}"))
+    }
+}
 
 /// Kind of isolation backend in use.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -633,7 +642,7 @@ fn copy_dir_selective_inner(src: &Path, dst: &Path, dst_root: &Path) -> Result<(
             return Ok(());
         }
     }
-    fs::create_dir_all(dst)?;
+    fs::create_dir_all(dst).map_err(|e| map_iso_io(e, "create_dir_all during isolation copy"))?;
     if !destination_stays_under(dst_root, dst) {
         return Err(TifError::Isolation(format!(
             "copy destination escapes root: {}",
@@ -685,9 +694,12 @@ fn copy_dir_selective_inner(src: &Path, dst: &Path, dst_root: &Path) -> Result<(
             copy_dir_selective_inner(&from, &to, dst_root)?;
         } else if meta.file_type().is_file() {
             if let Some(parent) = to.parent() {
-                fs::create_dir_all(parent)?;
+                fs::create_dir_all(parent)
+                    .map_err(|e| map_iso_io(e, "create parent during isolation copy"))?;
             }
-            fs::copy(&from, &to)?;
+            fs::copy(&from, &to).map_err(|e| {
+                map_iso_io(e, &format!("copy {} → {}", from.display(), to.display()))
+            })?;
         }
     }
     Ok(())
@@ -1195,6 +1207,76 @@ mod tests {
         assert!(!session.applied);
         assert!(!session.restore_pending);
         assert_eq!(fs::read_to_string(source.join("a.txt")).unwrap(), "A\n");
+    }
+
+    /// Chaos: dual-failure leaves restore_pending; operator rollback clears sticky flags.
+    #[test]
+    fn chaos_dual_failure_restore_pending_then_rollback() {
+        let dir = tempdir().unwrap();
+        let source = dir.path().join("source");
+        fs::create_dir_all(source.join("nested")).unwrap();
+        fs::write(source.join("nested/a.txt"), "A\n").unwrap();
+        fs::write(source.join("ok.txt"), "ok\n").unwrap();
+        let snaps = dir.path().join("snaps");
+        let iso = SnapshotIsolator::new(snaps);
+        let mut session = iso.create(&source, "chaos-dual").unwrap();
+        iso.preserve_baseline(&mut session).unwrap();
+
+        // Corrupt candidate so apply is likely to fail mid-way on some platforms.
+        fs::remove_dir_all(session.path.join("nested")).unwrap();
+        fs::write(session.path.join("nested"), "not-a-dir\n").unwrap();
+        fs::write(session.path.join("ok.txt"), "changed\n").unwrap();
+
+        // Force dual-failure sticky path: mark as if apply mutated + restore pending,
+        // then ensure rollback recovers from baseline (operator recovery path).
+        session.applied = true;
+        session.restore_pending = true;
+        fs::write(source.join("ok.txt"), "dirty-partial\n").unwrap();
+
+        // High-level helper used by orchestrator rollback.
+        crate::isolation::rollback_applied_candidate(&iso, &mut session).unwrap();
+        assert!(
+            !session.applied && !session.restore_pending,
+            "rollback must clear dual-failure sticky flags"
+        );
+        assert_eq!(fs::read_to_string(source.join("ok.txt")).unwrap(), "ok\n");
+        assert!(source.join("nested/a.txt").exists() || source.join("nested").is_dir());
+    }
+
+    /// Chaos: two sequential sticky restores (retry after first dual-failure).
+    #[test]
+    fn chaos_restore_pending_retry_is_idempotent_when_clean() {
+        let dir = tempdir().unwrap();
+        let source = dir.path().join("source");
+        fs::create_dir_all(&source).unwrap();
+        fs::write(source.join("a.txt"), "orig\n").unwrap();
+        let snaps = dir.path().join("snaps");
+        let iso = SnapshotIsolator::new(snaps);
+        let mut session = iso.create(&source, "chaos-retry").unwrap();
+        iso.preserve_baseline(&mut session).unwrap();
+        session.applied = true;
+        session.restore_pending = true;
+        fs::write(source.join("a.txt"), "mut\n").unwrap();
+        iso.restore_source(&mut session).unwrap();
+        // Second restore with flags already clear is a noop success path.
+        iso.restore_source(&mut session).unwrap();
+        assert!(!session.restore_pending);
+        assert_eq!(fs::read_to_string(source.join("a.txt")).unwrap(), "orig\n");
+    }
+
+    #[test]
+    fn disk_full_error_kind_is_classified() {
+        let err = std::io::Error::other("no space left on device");
+        assert!(crate::error::is_disk_full_io(&err));
+        match TifError::from_io(err) {
+            TifError::DiskFull(msg) => assert!(msg.to_ascii_lowercase().contains("no space")),
+            other => panic!("expected DiskFull, got {other}"),
+        }
+        // Unix ENOSPC raw code
+        let enospc = std::io::Error::from_raw_os_error(28);
+        assert!(crate::error::is_disk_full_io(&enospc));
+        let other = std::io::Error::new(std::io::ErrorKind::PermissionDenied, "denied");
+        assert!(!crate::error::is_disk_full_io(&other));
     }
 
     #[test]

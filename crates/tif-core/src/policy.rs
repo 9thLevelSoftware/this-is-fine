@@ -203,4 +203,45 @@ mod tests {
             .unwrap();
         assert_eq!(policy.fire_level, FireLevel::FiveAlarm);
     }
+
+    /// Performance smoke: policy resolve fast path stays well under a soft budget.
+    ///
+    /// Compile is pure in-memory (config + templates); adapters call this on every
+    /// task start, so regressions here are user-visible latency.
+    #[test]
+    fn policy_resolve_fast_path_smoke() {
+        use std::time::Instant;
+        let cfg = Config::default();
+        let compiler = PolicyCompiler::new();
+        // Warm once (UUID/clock paths).
+        let _ = compiler
+            .compile(
+                &cfg,
+                &PolicyCompileRequest {
+                    task_text: Some("fix null pointer".into()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let n = 200usize;
+        let start = Instant::now();
+        for i in 0..n {
+            let p = compiler
+                .compile(
+                    &cfg,
+                    &PolicyCompileRequest {
+                        task_text: Some(format!("fix bug number {i}")),
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+            assert!(p.fire_level.is_initial_selectable());
+        }
+        let elapsed = start.elapsed();
+        // Soft budget: 200 compiles in < 500ms on debug CI hosts (usually << 50ms).
+        assert!(
+            elapsed.as_millis() < 500,
+            "policy resolve fast path too slow: {elapsed:?} for {n} compiles"
+        );
+    }
 }

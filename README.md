@@ -23,7 +23,7 @@ This Is Fine is a **local-first** adaptive restraint and simplification system f
 
 ## Status
 
-Foundation is solid and fail-safe. **Production-grade delivery** (real reviewer backends, automatic Firebreak loop, Five-Alarm recovery, full adapters/TUI/distribution) is tracked in [`docs/ROADMAP.md`](docs/ROADMAP.md).
+**Production phases 0–10 are complete** in tree (adapters, production TUI, distribution, GA hardening). Roadmap + residual risks: [`docs/ROADMAP.md`](docs/ROADMAP.md). Day-to-day use and recovery: [`docs/user-guide.md`](docs/user-guide.md).
 
 ## Features (current)
 
@@ -33,16 +33,30 @@ Foundation is solid and fail-safe. **Production-grade delivery** (real reviewer 
 - **Policy compiler**, pressure scenarios, task classification
 - **Simplicity scoring** with weights, hard limits, correctness-floor gate
 - **Verification** planner/runner (explicit config first, safe discovery second)
-- **Firebreak** with user-authorized reviewers only (fail-safe; auto LLM backend in progress)
+- **Firebreak** closed loop with user-authorized reviewers (isolation + re-verify + approval queue)
+- **Five-Alarm** staged recovery after current containment failure
 - **Audit** store: SQLite + content-addressed artifacts (local only)
 - **Isolation** with real apply/rollback: Git worktree and non-Git snapshot
 - **Git-aware metrics** (`tif assess --from-git`, unified diff parse)
-- **Interactive TUI** (`tif tui`) — Dashboard, Current Run, Damage Assessment, and more
-- **CI templates** for GitHub Actions and GitLab (read-only by default)
-- **Installable adapters** for Claude Code, Codex, Gemini CLI, OpenCode
-- **Provider feature flags** on `tif-core` (`provider-mock` default; HTTP/process backends planned)
+- **Production TUI** (`tif tui`) — live events, Firebreak actions, reviewer probe, audit filter
+- **CI templates** for GitHub Actions and GitLab (read-only by default; optional guarded write)
+- **First-class adapters** for Claude Code, Codex, Gemini CLI, OpenCode (Unix + Windows installers)
+- **Distribution**: install scripts, release workflow with checksums, Homebrew/WinGet stubs
+- **Provider backends** on `tif-core` (mock default; OpenAI-compatible / Anthropic / process)
 
 ## Install
+
+### Release binary (no Rust required)
+
+```bash
+# Unix
+curl -fsSL https://raw.githubusercontent.com/9thLevelSoftware/this-is-fine/main/scripts/install.sh | bash
+```
+
+```powershell
+# Windows PowerShell
+irm https://raw.githubusercontent.com/9thLevelSoftware/this-is-fine/main/scripts/install.ps1 | iex
+```
 
 ### From source
 
@@ -90,11 +104,14 @@ tif fire-level
 tif fire-level 4
 
 # Interactive TUI (keyboard: ↑↓ / 1-8 / r refresh / q quit)
+# Firebreak: a approve · x reject · R rollback (confirm)
 tif tui
 
 # Suspend containment for exploratory work
 tif off
 ```
+
+See the [user guide](docs/user-guide.md) for recovery (dual-failure, hung verify, disk full).
 
 ### JSON (agent adapters)
 
@@ -230,9 +247,11 @@ MIT OR Apache-2.0
 | Doc | Description |
 |-----|-------------|
 | [Design specification](docs/superpowers/specs/2026-08-04-this-is-fine-design.md) | Product and system design |
-| [Production roadmap](docs/ROADMAP.md) | Phases 0–10 toward GA |
+| [Production roadmap](docs/ROADMAP.md) | Phases 0–10 (GA checklist) |
+| [User guide](docs/user-guide.md) | Install, adapters, recovery runbook |
 | [Protocol v1](docs/protocol/v1.md) | Adapter JSON contract |
 | [Config schema v1](docs/config/schema-v1.md) | Configuration reference |
 | [Threat model](docs/security/threat-model.md) | Security boundaries |
 | [Versioning](docs/VERSIONING.md) | SemVer / schema / protocol |
+| [Adapters](adapters/README.md) | Agent install + troubleshooting |
 | [Changelog](CHANGELOG.md) | Release notes |

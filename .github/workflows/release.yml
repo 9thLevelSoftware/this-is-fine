@@ -1,0 +1,155 @@
+# Build multi-OS release binaries, checksums, and attach to GitHub Releases on tag.
+#
+# Tag format: v0.1.0 (SemVer with leading v)
+# Signing: optional — set secrets for cosign/GPG later; SHA256SUMS always published.
+
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: build-${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            bin: tif
+            asset: tif-x86_64-unknown-linux-gnu
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+            bin: tif
+            asset: tif-aarch64-unknown-linux-gnu
+            cross: true
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            bin: tif
+            asset: tif-x86_64-apple-darwin
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            bin: tif
+            asset: tif-aarch64-apple-darwin
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            bin: tif.exe
+            asset: tif-x86_64-pc-windows-msvc
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: release-${{ matrix.target }}
+
+      - name: Install cross (Linux aarch64)
+        if: matrix.cross
+        run: cargo install cross --locked || cargo install cross
+
+      - name: Build release
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${{ matrix.cross }}" == "true" ]]; then
+            cross build --release -p tif --target ${{ matrix.target }}
+          else
+            cargo build --release -p tif --target ${{ matrix.target }}
+          fi
+
+      - name: Package
+        shell: bash
+        run: |
+          set -euo pipefail
+          STAGING="dist/${{ matrix.asset }}"
+          mkdir -p "$STAGING"
+          BIN="target/${{ matrix.target }}/release/${{ matrix.bin }}"
+          cp "$BIN" "$STAGING/"
+          cp README.md LICENSE* "$STAGING/" 2>/dev/null || cp README.md "$STAGING/"
+          (
+            cd dist
+            if [[ "${{ runner.os }}" == "Windows" ]]; then
+              7z a "${{ matrix.asset }}.zip" "${{ matrix.asset }}"
+            else
+              tar -czf "${{ matrix.asset }}.tar.gz" "${{ matrix.asset }}"
+            fi
+          )
+          if [[ -f "dist/${{ matrix.asset }}.tar.gz" ]]; then
+            echo "ASSET=dist/${{ matrix.asset }}.tar.gz" >> "$GITHUB_ENV"
+          else
+            echo "ASSET=dist/${{ matrix.asset }}.zip" >> "$GITHUB_ENV"
+          fi
+
+      - name: Checksum
+        shell: bash
+        run: |
+          set -euo pipefail
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum "$ASSET" > "${ASSET}.sha256"
+          else
+            shasum -a 256 "$ASSET" > "${ASSET}.sha256"
+          fi
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset }}
+          path: |
+            dist/${{ matrix.asset }}.tar.gz
+            dist/${{ matrix.asset }}.zip
+            dist/${{ matrix.asset }}.tar.gz.sha256
+            dist/${{ matrix.asset }}.zip.sha256
+
+  publish:
+    name: publish-release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all assets
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+
+      - name: Flatten and build SHA256SUMS
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          find release-assets -type f \( -name '*.tar.gz' -o -name '*.zip' -o -name '*.sha256' \) -exec cp {} out/ \;
+          cd out
+          ls -la
+          {
+            for f in *.tar.gz *.zip; do
+              [ -f "$f" ] || continue
+              if [ -f "${f}.sha256" ]; then
+                cat "${f}.sha256"
+              else
+                sha256sum "$f"
+              fi
+            done
+          } > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            out/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

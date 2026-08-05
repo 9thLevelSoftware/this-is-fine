@@ -1,11 +1,13 @@
-# This Is Fine — read-only CI template (GitLab CI)
+# This Is Fine — CI template (GitLab CI)
 #
 # Default: assess + verify. Does not modify protected branches.
-# Optional MR/patch generation must be explicitly enabled in .this-is-fine.toml
-# and in this pipeline.
+# Optional write/MR generation requires:
+#   - ci.allow_write / ci.allow_pr in .this-is-fine.toml
+#   - CI/CD variable TIF_ALLOW_WRITE=true (and TIF_ALLOW_PR=true for MR path)
 
 stages:
   - contain
+  - write
 
 this-is-fine:
   stage: contain
@@ -27,14 +29,41 @@ this-is-fine:
     - tif inspect --json
     - tif verify --json
     - |
+      if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+        tif assess --from-git --json || true
+      fi
       tif assess --json \
         --files-added 0 \
         --files-changed 0 \
         --lines-added 0 \
         --deps-added 0
-  # artifacts:
-  #   when: always
-  #   paths:
-  #     - .this-is-fine/
-  #   reports:
-  #     # attach Damage Assessment JSON if you export it
+
+# Optional write job — only when TIF_ALLOW_WRITE=true and config allows.
+this-is-fine-write:
+  stage: write
+  image: rust:1.75
+  rules:
+    - if: $TIF_ALLOW_WRITE == "true"
+  needs: ["this-is-fine"]
+  before_script:
+    - |
+      if ! command -v tif >/dev/null 2>&1; then
+        cargo install --path crates/tif
+        export PATH="$HOME/.cargo/bin:$PATH"
+      fi
+  script:
+    - |
+      set -euo pipefail
+      if ! grep -E '^\s*allow_write\s*=\s*true' .this-is-fine.toml >/dev/null 2>&1; then
+        echo "ci.allow_write is not true — refusing write path"
+        exit 0
+      fi
+      mkdir -p .this-is-fine/ci-out
+      tif assess --from-git --json > .this-is-fine/ci-out/assess.json || true
+      tif firebreak --json --auto > .this-is-fine/ci-out/firebreak.json || true
+      git diff > .this-is-fine/ci-out/working-tree.patch || true
+  artifacts:
+    when: always
+    paths:
+      - .this-is-fine/ci-out/
+    expire_in: 14 days
