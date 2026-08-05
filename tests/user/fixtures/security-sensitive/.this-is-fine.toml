@@ -9,9 +9,12 @@ discover = false
 [simplicity.limits]
 new_runtime_dependencies = 0
 
+
 [approval]
+# Path-based gating under test (B07). Global require_firebreak_approval stays false
+# so approval is driven by sensitive_paths, not a blanket switch.
 sensitive_paths = ["src/auth/**"]
-require_firebreak_approval = true
+require_firebreak_approval = false
 auto_apply_firebreak = true
 
 [audit]

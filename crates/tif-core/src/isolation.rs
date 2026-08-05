@@ -592,22 +592,30 @@ fn git(cwd: &Path, args: &[&str]) -> Result<std::process::ExitStatus> {
 }
 
 /// Strip Windows device/verbatim prefixes so git and other tools get ordinary paths.
+///
+/// Does **not** use lossy Unicode conversion: non-UTF-8 paths are left intact so
+/// `path_for_external_tool` can refuse them instead of handing git a mangled path.
 fn normalize_for_external_tool(path: &Path) -> PathBuf {
-    let lossy = path.to_string_lossy();
-    let s = lossy.as_ref();
-    let stripped = s
-        .strip_prefix(r"\\?\")
-        .or_else(|| s.strip_prefix("//?/"))
-        .or_else(|| s.strip_prefix(r"//?\"))
-        .unwrap_or(s);
-    PathBuf::from(stripped)
+    // Prefix strip only when the path is valid Unicode (Windows verbatim prefixes are ASCII).
+    if let Some(s) = path.to_str() {
+        let stripped = s
+            .strip_prefix(r"\\?\")
+            .or_else(|| s.strip_prefix("//?/"))
+            .or_else(|| s.strip_prefix(r"//?\"))
+            .unwrap_or(s);
+        return PathBuf::from(stripped);
+    }
+    path.to_path_buf()
 }
 
 fn path_for_external_tool(path: &Path) -> Result<String> {
     let normalized = normalize_for_external_tool(path);
-    normalized.into_os_string().into_string().map_err(|_| {
-        TifError::Isolation("path is not valid Unicode; refusing to fall back to '.'".into())
-    })
+    match normalized.to_str() {
+        Some(s) => Ok(s.to_string()),
+        None => Err(TifError::Isolation(
+            "path is not valid Unicode; refusing to fall back to '.'".into(),
+        )),
+    }
 }
 
 fn chrono_now() -> i64 {

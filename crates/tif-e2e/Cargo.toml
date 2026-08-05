@@ -9,10 +9,6 @@ rust-version.workspace = true
 description = "AI field-validation / user-testing harness for This Is Fine"
 publish = false
 
-[lib]
-name = "tif_e2e"
-path = "src/lib.rs"
-
 [dependencies]
 serde = { workspace = true }
 serde_json = { workspace = true }

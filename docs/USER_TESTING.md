@@ -359,10 +359,9 @@ For each Must ID touched, one row:
 ### 8.3 Single-scenario debug
 
 ```bash
-# Once harness exists:
-cargo test -p tif-e2e scenario_b06 -- --nocapture
-# or
-./scripts/user-test/run-scenario.sh B06
+# Filter by Rust test function name (see crates/tif-e2e/tests/*.rs):
+cargo test -p tif-e2e b06_firebreak_success_and_rollback -- --nocapture
+cargo test -p tif-e2e a02_empty_reviewer_pool -- --nocapture
 ```
 
 ### 8.4 Incident log rules (during C01)

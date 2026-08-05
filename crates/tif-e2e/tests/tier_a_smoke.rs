@@ -2,10 +2,12 @@
 //! UT-0: A02, A05 · UT-1: A01, A03–A04, A06–A10
 
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::Mutex;
 use tif_core::config::ReviewerConfig;
 use tif_core::credentials::resolve_credential;
+use tif_core::error::TifError;
 use tif_core::policy::{PolicyCompileRequest, PolicyCompiler};
 use tif_core::providers::context::{
     build_reviewer_context, ContextBuildRequest, ReviewerInvocationMode,
@@ -14,8 +16,11 @@ use tif_core::scoring::{select_smaller_verified, CorrectnessFloor, DiffMetrics, 
 use tif_core::task::TaskCategory;
 use tif_e2e::{
     copy_fixture, ensure_tif_built, git_init_commit, run_scenario, tif_json, tree_hash,
-    ScenarioResult,
+    tree_hash_excluding, ScenarioResult,
 };
+
+/// Serialize A07 so process-global env mutations cannot race siblings.
+static ENV_TEST_LOCK: Mutex<()> = Mutex::new(());
 
 #[test]
 fn ut0_binary_and_fixtures_present() {
@@ -138,15 +143,6 @@ fn a03_backend_fail_preserves_source() {
         if firebreak_applied(&complete) {
             return Err(format!("applied on backend fail: {}", complete.stdout));
         }
-        let preserved = complete
-            .data()
-            .and_then(|d| d.get("firebreak"))
-            .and_then(|f| f.get("original_preserved"))
-            .and_then(|v| v.as_bool())
-            .unwrap_or(true);
-        if !preserved && firebreak_applied(&complete) {
-            return Err("original not preserved".into());
-        }
         let after = tree_hash(root).map_err(|e| e.to_string())?;
         if after != before {
             return Err(format!("tree changed: {before} vs {after}"));
@@ -224,25 +220,53 @@ fn a05_incomplete_verify_fails_floor() {
         )
         .map_err(|e| e.to_string())?;
 
-        let assessment = complete.data().and_then(|d| d.get("assessment"));
-        let status = assessment
-            .and_then(|a| a.get("status"))
-            .and_then(|s| s.as_str())
-            .unwrap_or("");
-        let floor_ok = assessment
-            .and_then(|a| a.get("correctness"))
-            .and_then(|f| f.get("verification_passed"))
-            .and_then(|v| v.as_bool());
-
-        if complete.ok_envelope() && floor_ok == Some(true) && status == "contained" {
+        if !complete.ok_envelope() {
             return Err(format!(
-                "incomplete verify must not pass as contained; out={}",
+                "expected structured complete response, got: {}",
+                complete.summary()
+            ));
+        }
+        let assessment = complete
+            .data()
+            .and_then(|d| d.get("assessment"))
+            .ok_or_else(|| format!("missing assessment: {}", complete.stdout))?;
+        let status = assessment
+            .get("status")
+            .and_then(|s| s.as_str())
+            .ok_or("missing assessment.status")?;
+        let floor_ok = assessment
+            .get("correctness")
+            .and_then(|f| f.get("verification_passed"))
+            .and_then(|v| v.as_bool())
+            .ok_or("missing correctness.verification_passed")?;
+        let incomplete = assessment
+            .get("verification")
+            .and_then(|v| v.get("incomplete_plan"))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+
+        if floor_ok {
+            return Err(format!(
+                "incomplete verify must fail floor; status={status} out={}",
                 complete.stdout
             ));
         }
+        if status == "contained" {
+            return Err(format!(
+                "must not be contained with incomplete plan: {status}"
+            ));
+        }
+        if !incomplete && status != "unverified" && status != "rejected" {
+            return Err(format!(
+                "expected incomplete_plan or unverified/rejected; status={status} incomplete={incomplete}"
+            ));
+        }
+        if firebreak_applied(&complete) {
+            return Err("must not apply Firebreak when floor fails".into());
+        }
 
         Ok(format!(
-            "floor blocked; status={status} floor_ok={floor_ok:?}"
+            "floor blocked; status={status} floor_ok={floor_ok} incomplete={incomplete}"
         ))
     });
     assert_scenario(&r);
@@ -296,6 +320,7 @@ fn a06_egress_deny_blocks_source_package() {
 #[test]
 fn a07_process_env_scrub() {
     ensure_tif_built();
+    let _serial = ENV_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
     let r = run_scenario("A07", || {
         let tmp = copy_fixture("rust-mini").map_err(|e| e.to_string())?;
         let root = tmp.path();
@@ -350,9 +375,9 @@ process_argv = {argv_toml}
         fs::write(root.join(".this-is-fine.toml"), toml).map_err(|e| e.to_string())?;
         git_init_commit(root).map_err(|e| e.to_string())?;
 
-        // Inject secrets into parent env for this process (inherited by tif, scrubbed for child).
-        std::env::set_var("TIF_E2E_SECRET", "super-secret-should-not-leak");
-        std::env::set_var("OPENAI_API_KEY", "sk-test-should-not-leak");
+        // RAII restores prior env on every exit path (including early Err).
+        let _secret_guard = EnvVarGuard::set("TIF_E2E_SECRET", "super-secret-should-not-leak");
+        let _key_guard = EnvVarGuard::set("OPENAI_API_KEY", "sk-test-should-not-leak");
 
         let out = tif_json(
             root,
@@ -375,20 +400,9 @@ process_argv = {argv_toml}
         {
             return Err(format!("secret leaked into process env:\n{body}"));
         }
-        // PATH should still exist (allowlisted).
-        if !body
-            .lines()
-            .any(|l| l.starts_with("PATH=") || l.starts_with("Path="))
-        {
-            // On some Windows builds Path may be set differently; soft note only if empty file.
-            if body.trim().is_empty() {
-                return Err("env dump empty".into());
-            }
+        if body.trim().is_empty() {
+            return Err("env dump empty".into());
         }
-
-        // SAFETY: test-only secret vars set earlier in this scenario.
-        std::env::remove_var("TIF_E2E_SECRET");
-        std::env::remove_var("OPENAI_API_KEY");
 
         Ok("process backend scrubbed secrets from child env".into())
     });
@@ -409,7 +423,6 @@ fn a08_symlink_candidate_rejected() {
         let link = root.join("candidate_link");
         #[cfg(windows)]
         {
-            // Directory symlink (may need privileges); fall back to junction-style if needed.
             let status = Command::new("cmd")
                 .args([
                     "/C",
@@ -421,13 +434,15 @@ fn a08_symlink_candidate_rejected() {
                 .status()
                 .map_err(|e| e.to_string())?;
             if !status.success() {
-                // Skip-pass if we cannot create links in this environment.
-                return Ok("symlink/junction unavailable; skipped create (env limitation)".into());
+                return Err(format!(
+                    "failed to create junction for A08 (cannot exercise symlink rejection): status={status:?}"
+                ));
             }
         }
         #[cfg(unix)]
         {
-            std::os::unix::fs::symlink(outside.path(), &link).map_err(|e| e.to_string())?;
+            std::os::unix::fs::symlink(outside.path(), &link)
+                .map_err(|e| format!("failed to create symlink for A08: {e}"))?;
         }
 
         let begin = tif_json(
@@ -437,7 +452,6 @@ fn a08_symlink_candidate_rejected() {
         .map_err(|e| e.to_string())?;
         let run_id = begin.data_str("run_id").ok_or_else(|| begin.summary())?;
 
-        // Force OOC so firebreak path is relevant, then try apply from symlink candidate.
         let _ = tif_json(
             root,
             &[
@@ -456,7 +470,8 @@ fn a08_symlink_candidate_rejected() {
         )
         .map_err(|e| e.to_string())?;
 
-        let before = tree_hash(root).map_err(|e| e.to_string())?;
+        // Exclude the junction path so tree_hash is stable across apply attempts.
+        let before = tree_hash_excluding(root, &["candidate_link"]).map_err(|e| e.to_string())?;
         let fb = tif_json(
             root,
             &[
@@ -470,31 +485,34 @@ fn a08_symlink_candidate_rejected() {
         )
         .map_err(|e| e.to_string())?;
 
-        // Must not apply from symlink root.
-        let after = tree_hash(root).map_err(|e| e.to_string())?;
-        // Ignore the junction itself appearing in hash if we exclude it... tree_hash doesn't skip junction.
-        // Check source files not polluted with evil.txt at root.
         if root.join("evil.txt").is_file() {
             return Err("symlink candidate applied evil.txt into source".into());
         }
-        if fb.ok_envelope() {
-            let applied = fb
-                .data()
-                .and_then(|d| d.get("applied"))
-                .and_then(|v| v.as_bool())
-                .or_else(|| {
-                    fb.data()
-                        .and_then(|d| d.get("firebreak"))
-                        .and_then(|f| f.get("applied"))
-                        .and_then(|v| v.as_bool())
-                })
-                .unwrap_or(false);
-            if applied {
-                return Err(format!("symlink candidate applied: {}", fb.stdout));
-            }
+        let applied = fb
+            .data()
+            .and_then(|d| d.get("applied"))
+            .and_then(|v| v.as_bool())
+            .or_else(|| {
+                fb.data()
+                    .and_then(|d| d.get("firebreak"))
+                    .and_then(|f| f.get("applied"))
+                    .and_then(|v| v.as_bool())
+            })
+            .unwrap_or(false);
+        if applied {
+            return Err(format!("symlink candidate applied: {}", fb.stdout));
         }
-        let _ = before;
-        let _ = after;
+        // Reject/error path is required (symlink roots must not silently no-op apply).
+        if fb.ok_envelope() && applied {
+            return Err("ok envelope with applied=true for symlink candidate".into());
+        }
+
+        let after = tree_hash_excluding(root, &["candidate_link"]).map_err(|e| e.to_string())?;
+        if after != before {
+            return Err(format!(
+                "source tree mutated under symlink apply attempt\nbefore={before}\nafter={after}"
+            ));
+        }
         Ok(format!("symlink candidate not applied; {}", fb.summary()))
     });
     assert_scenario(&r);
@@ -512,20 +530,23 @@ fn a09_credential_file_outside_secrets_dir() {
                 "should reject outside secrets dir, got secret len {}",
                 v.len()
             )),
-            Err(e) => {
-                let msg = e.to_string().to_lowercase();
-                if msg.contains("secret")
-                    || msg.contains("allowlist")
-                    || msg.contains("escapes")
-                    || msg.contains("must be under")
-                    || msg.contains("outside")
-                {
-                    Ok(format!("rejected: {e}"))
+            Err(TifError::Config(msg)) => {
+                let lower = msg.to_lowercase();
+                // Accept only path-policy messages (allowlist / under secrets / escapes).
+                let policy = lower.contains("must be under")
+                    || lower.contains("outside")
+                    || lower.contains("escapes secrets")
+                    || lower.contains("secrets dir")
+                    || lower.contains("secrets directory");
+                if policy {
+                    Ok(format!("path policy rejected: {msg}"))
                 } else {
-                    // Still an error is acceptable for path policy.
-                    Ok(format!("rejected (config error): {e}"))
+                    Err(format!("Config error is not path-policy evidence: {msg}"))
                 }
             }
+            Err(e) => Err(format!(
+                "expected TifError::Config path-policy error, got: {e:?}"
+            )),
         }
     });
     assert_scenario(&r);
@@ -689,17 +710,17 @@ fn set_empty_verification(text: &str) -> String {
     out
 }
 
-fn find_python() -> Option<std::path::PathBuf> {
+fn find_python() -> Option<PathBuf> {
     for name in ["python", "python3"] {
         if let Ok(out) = Command::new(name).arg("--version").output() {
             if out.status.success() {
-                return Some(std::path::PathBuf::from(name));
+                return Some(PathBuf::from(name));
             }
         }
     }
     if let Ok(out) = Command::new("py").args(["-3", "--version"]).output() {
         if out.status.success() {
-            return Some(std::path::PathBuf::from("py"));
+            return Some(PathBuf::from("py"));
         }
     }
     None
@@ -713,6 +734,32 @@ fn python_process_argv_toml(py: &Path, script: &str, dump: &str) -> String {
     } else {
         let py_str = py.display().to_string().replace('\\', "/");
         format!(r#"["{py_str}", "{script}", "{dump}"]"#)
+    }
+}
+
+/// Restores a process env var to its previous value (or unsets it) on drop.
+struct EnvVarGuard {
+    key: String,
+    prev: Option<String>,
+}
+
+impl EnvVarGuard {
+    fn set(key: &str, value: &str) -> Self {
+        let prev = std::env::var(key).ok();
+        std::env::set_var(key, value);
+        Self {
+            key: key.to_string(),
+            prev,
+        }
+    }
+}
+
+impl Drop for EnvVarGuard {
+    fn drop(&mut self) {
+        match &self.prev {
+            Some(v) => std::env::set_var(&self.key, v),
+            None => std::env::remove_var(&self.key),
+        }
     }
 }
 

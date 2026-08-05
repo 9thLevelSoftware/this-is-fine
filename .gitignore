@@ -27,6 +27,3 @@ Thumbs.db
 # AI field-validation evidence packs (local runs)
 /evidence/
 
-# Ephemeral e2e workspaces
-/target/e2e-tmp/
-

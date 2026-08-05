@@ -180,11 +180,14 @@ fn b11_cli_tour_json_protocol() {
                     out.summary()
                 ));
             }
-            // dry-run / empty audit may still be ok envelopes.
-            if !out.ok_envelope() && out.status == 0 {
-                return Err(format!("{args:?}: status 0 but ok=false: {}", out.stdout));
+            // All tour commands are documented success paths: require exit 0 + ok envelope.
+            if out.status != 0 || !out.ok_envelope() {
+                return Err(format!(
+                    "{args:?}: expected exit 0 and ok=true; got {}",
+                    out.summary()
+                ));
             }
-            notes.push(format!("{}:ok={}", args.join(" "), out.ok_envelope()));
+            notes.push(format!("{}:ok", args.join(" ")));
         }
 
         Ok(notes.join("; "))
@@ -248,9 +251,11 @@ fn b12_adapter_protocol_lifecycle() {
         let state2 = complete.data_str("state").unwrap_or_default();
 
         let show = tif_json(root, &["run", "show", &run_id]).map_err(|e| e.to_string())?;
-        // show should be ok if run exists.
-        if !show.ok_envelope() && show.status != 0 {
-            return Err(format!("run show: {}", show.summary()));
+        if !show.ok_envelope() || show.status != 0 {
+            return Err(format!(
+                "run show must succeed (ok + exit 0): {}",
+                show.summary()
+            ));
         }
 
         Ok(format!(
@@ -370,15 +375,69 @@ fn b06_firebreak_success_and_rollback() {
 fn b07_sensitive_path_requires_approval() {
     ensure_tif_built();
     let r = run_scenario("B07", || {
+        // --- Control: no sensitive_paths -> OOC Firebreak auto-applies ---
+        let ctrl = copy_fixture("rust-mini").map_err(|e| e.to_string())?;
+        let ctrl_root = ctrl.path();
+        fs::write(ctrl_root.join("TIF_MOCK_REDUCE"), vec![b'X'; 40_000])
+            .map_err(|e| e.to_string())?;
+        git_init_commit(ctrl_root).map_err(|e| e.to_string())?;
+        let begin_ctrl = tif_json(
+            ctrl_root,
+            &["run", "begin", "--task", "control non-sensitive", "--force"],
+        )
+        .map_err(|e| e.to_string())?;
+        let ctrl_id = begin_ctrl
+            .data_str("run_id")
+            .ok_or_else(|| begin_ctrl.summary())?;
+        // Post-begin non-sensitive edit (after begin, not in baseline commit).
+        let mut lib =
+            fs::read_to_string(ctrl_root.join("src/lib.rs")).map_err(|e| e.to_string())?;
+        lib.push_str("\n// control touch\n");
+        fs::write(ctrl_root.join("src/lib.rs"), lib).map_err(|e| e.to_string())?;
+        let ctrl_complete = tif_json(
+            ctrl_root,
+            &[
+                "run",
+                "complete",
+                &ctrl_id,
+                "--deps-added",
+                "1",
+                "--files-added",
+                "2",
+                "--lines-added",
+                "80",
+                "--auto-firebreak",
+                "--verification-passed",
+                "true",
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+        let ctrl_fb = ctrl_complete.data().and_then(|d| d.get("firebreak"));
+        let ctrl_applied = ctrl_fb
+            .and_then(|f| f.get("applied"))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let ctrl_requires = ctrl_fb
+            .and_then(|f| f.get("requires_approval"))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        if ctrl_requires {
+            return Err(format!(
+                "control without sensitive_paths required approval: {}",
+                ctrl_complete.stdout
+            ));
+        }
+        if !ctrl_applied {
+            return Err(format!(
+                "control should auto-apply; out={}",
+                ctrl_complete.stdout
+            ));
+        }
+
+        // --- Sensitive fixture: sensitive_paths=src/auth/**, require_firebreak_approval=false ---
         let tmp = copy_fixture("security-sensitive").map_err(|e| e.to_string())?;
         let root = tmp.path();
-        // Mock reduce so candidate is smaller and ready for approval.
         fs::write(root.join("TIF_MOCK_REDUCE"), vec![b'X'; 40_000]).map_err(|e| e.to_string())?;
-        // Touch sensitive path so approval policy engages (also require_firebreak_approval=true).
-        let login = root.join("src/auth/login.rs");
-        let mut body = fs::read_to_string(&login).map_err(|e| e.to_string())?;
-        body.push_str("\n// sensitive touch\n");
-        fs::write(&login, body).map_err(|e| e.to_string())?;
         git_init_commit(root).map_err(|e| e.to_string())?;
 
         let begin = tif_json(
@@ -391,6 +450,12 @@ fn b07_sensitive_path_requires_approval() {
         }
         let run_id = begin.data_str("run_id").ok_or("no run_id")?;
 
+        // Post-begin sensitive edit (not committed into baseline).
+        let login = root.join("src/auth/login.rs");
+        let mut body = fs::read_to_string(&login).map_err(|e| e.to_string())?;
+        body.push_str("\n// sensitive touch after begin\n");
+        fs::write(&login, body).map_err(|e| e.to_string())?;
+
         let complete = tif_json(
             root,
             &[
@@ -400,9 +465,7 @@ fn b07_sensitive_path_requires_approval() {
                 "--deps-added",
                 "1",
                 "--files-added",
-                "1",
-                "--files-changed",
-                "1",
+                "2",
                 "--lines-added",
                 "80",
                 "--auto-firebreak",
@@ -425,18 +488,17 @@ fn b07_sensitive_path_requires_approval() {
 
         if applied {
             return Err(format!(
-                "must not auto-apply when approval required; state={state} out={}",
+                "must not auto-apply under sensitive_paths; state={state} out={}",
                 complete.stdout
             ));
         }
         if state != "awaiting_approval" && !requires {
             return Err(format!(
-                "expected awaiting_approval or requires_approval; state={state} out={}",
+                "expected awaiting_approval for sensitive fixture; state={state} out={}",
                 complete.stdout
             ));
         }
 
-        // Reject path leaves reduce marker.
         let rej = tif_json(root, &["reject", &run_id]).map_err(|e| e.to_string())?;
         if !rej.ok_envelope() {
             return Err(format!("reject failed: {}", rej.summary()));
@@ -445,13 +507,15 @@ fn b07_sensitive_path_requires_approval() {
             return Err("reject should leave original bloat marker".into());
         }
 
-        // Fresh run → approve applies.
         let begin2 = tif_json(
             root,
             &["run", "begin", "--task", "auth approve path", "--force"],
         )
         .map_err(|e| e.to_string())?;
         let run_id2 = begin2.data_str("run_id").ok_or("no run_id2")?;
+        let mut body2 = fs::read_to_string(&login).map_err(|e| e.to_string())?;
+        body2.push_str("\n// sensitive approve path\n");
+        fs::write(&login, body2).map_err(|e| e.to_string())?;
         let complete2 = tif_json(
             root,
             &[
@@ -461,7 +525,7 @@ fn b07_sensitive_path_requires_approval() {
                 "--deps-added",
                 "1",
                 "--files-added",
-                "1",
+                "2",
                 "--lines-added",
                 "80",
                 "--auto-firebreak",
@@ -471,14 +535,13 @@ fn b07_sensitive_path_requires_approval() {
         )
         .map_err(|e| e.to_string())?;
         let state2 = complete2.data_str("state").unwrap_or_default();
-        if state2 != "awaiting_approval"
-            && !complete2
-                .data()
-                .and_then(|d| d.get("firebreak"))
-                .and_then(|f| f.get("requires_approval"))
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false)
-        {
+        let requires2 = complete2
+            .data()
+            .and_then(|d| d.get("firebreak"))
+            .and_then(|f| f.get("requires_approval"))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        if state2 != "awaiting_approval" && !requires2 {
             return Err(format!("second run not awaiting approval: {state2}"));
         }
 
@@ -491,7 +554,7 @@ fn b07_sensitive_path_requires_approval() {
         }
 
         Ok(format!(
-            "approval gate ok; reject kept original; approve applied; first_state={state}"
+            "control auto-applied; sensitive required approval; first_state={state}"
         ))
     });
     assert_scenario(&r);

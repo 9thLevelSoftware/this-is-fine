@@ -93,17 +93,29 @@ pub fn fixture_path(name: &str) -> PathBuf {
         .join(name)
 }
 
+/// Cargo target directory (`CARGO_TARGET_DIR` or `<workspace>/target`).
+pub fn cargo_target_dir() -> PathBuf {
+    if let Ok(dir) = std::env::var("CARGO_TARGET_DIR") {
+        let p = PathBuf::from(&dir);
+        if p.is_absolute() {
+            return p;
+        }
+        return workspace_root().join(p);
+    }
+    workspace_root().join("target")
+}
+
 /// Resolve the `tif` binary (debug preferred when running tests).
 pub fn tif_bin() -> PathBuf {
     if let Ok(p) = std::env::var("CARGO_BIN_EXE_tif") {
         return PathBuf::from(p);
     }
-    let root = workspace_root();
+    let target = cargo_target_dir();
     let candidates = [
-        root.join("target/debug/tif"),
-        root.join("target/debug/tif.exe"),
-        root.join("target/release/tif"),
-        root.join("target/release/tif.exe"),
+        target.join("debug/tif"),
+        target.join("debug/tif.exe"),
+        target.join("release/tif"),
+        target.join("release/tif.exe"),
     ];
     for c in candidates {
         if c.is_file() {
@@ -112,7 +124,7 @@ pub fn tif_bin() -> PathBuf {
     }
     panic!(
         "tif binary not found under {}; run `cargo build -p tif` first",
-        root.join("target").display()
+        target.display()
     );
 }
 
@@ -128,7 +140,7 @@ pub fn copy_fixture(name: &str) -> io::Result<tempfile::TempDir> {
             format!("fixture not found: {}", src.display()),
         ));
     }
-    let e2e_base = workspace_root().join("target").join("e2e-tmp");
+    let e2e_base = cargo_target_dir().join("e2e-tmp");
     fs::create_dir_all(&e2e_base)?;
     let tmp = tempfile::Builder::new()
         .prefix(&format!("{name}-"))
@@ -293,6 +305,11 @@ fn parse_json_envelope(stdout: &str) -> Option<Value> {
 
 /// Content hash of tracked workspace files (excludes .git and .this-is-fine state).
 pub fn tree_hash(root: &Path) -> io::Result<String> {
+    tree_hash_excluding(root, &[])
+}
+
+/// Like [`tree_hash`], but skips relative path prefixes (e.g. test-only junctions).
+pub fn tree_hash_excluding(root: &Path, exclude_prefixes: &[&str]) -> io::Result<String> {
     let mut map = BTreeMap::new();
     for entry in WalkDir::new(root).into_iter().filter_map(|e| e.ok()) {
         let path = entry.path();
@@ -300,6 +317,13 @@ pub fn tree_hash(root: &Path) -> io::Result<String> {
             continue;
         }
         let rel = path.strip_prefix(root).unwrap();
+        let rel_s = rel.to_string_lossy().replace('\\', "/");
+        if exclude_prefixes
+            .iter()
+            .any(|p| rel_s == *p || rel_s.starts_with(&format!("{p}/")))
+        {
+            continue;
+        }
         if rel.components().any(|c| {
             matches!(
                 c.as_os_str().to_str(),
@@ -312,7 +336,7 @@ pub fn tree_hash(root: &Path) -> io::Result<String> {
         let mut hasher = Sha256::new();
         hasher.update(&bytes);
         let digest = format!("{:x}", hasher.finalize());
-        map.insert(rel.to_string_lossy().replace('\\', "/"), digest);
+        map.insert(rel_s, digest);
     }
     let mut outer = Sha256::new();
     for (k, v) in &map {
@@ -348,11 +372,77 @@ fn tif_bin_exists() -> bool {
     if std::env::var("CARGO_BIN_EXE_tif").is_ok() {
         return true;
     }
-    let root = workspace_root();
-    root.join("target/debug/tif").is_file()
-        || root.join("target/debug/tif.exe").is_file()
-        || root.join("target/release/tif").is_file()
-        || root.join("target/release/tif.exe").is_file()
+    let target = cargo_target_dir();
+    target.join("debug/tif").is_file()
+        || target.join("debug/tif.exe").is_file()
+        || target.join("release/tif").is_file()
+        || target.join("release/tif.exe").is_file()
+}
+
+/// Parse `cargo test -- --nocapture` log lines into scenario results for evidence packs.
+///
+/// Recognizes lines like `test a02_empty_reviewer_pool_fail_closed ... ok`.
+pub fn parse_cargo_test_log(log: &str) -> Vec<ScenarioResult> {
+    let mut out = Vec::new();
+    for line in log.lines() {
+        let line = line.trim();
+        // test name ... ok|FAILED|ignored
+        if !line.starts_with("test ") {
+            continue;
+        }
+        if let Some(rest) = line.strip_prefix("test ") {
+            if let Some((name, status)) = rest.rsplit_once(" ... ") {
+                let name = name.trim();
+                let status = status.trim();
+                // Map test fn names to scenario IDs when they match aNN_/bNN_ prefixes.
+                let id = scenario_id_from_test_name(name);
+                let pass = status.eq_ignore_ascii_case("ok");
+                let notes = format!("cargo test {name} → {status}");
+                if pass {
+                    out.push(ScenarioResult::ok(id, Duration::from_millis(0), notes));
+                } else if status.eq_ignore_ascii_case("FAILED") {
+                    out.push(ScenarioResult::fail(
+                        id,
+                        Duration::from_millis(0),
+                        notes.clone(),
+                        notes,
+                    ));
+                }
+            }
+        }
+    }
+    out
+}
+
+fn scenario_id_from_test_name(name: &str) -> &'static str {
+    // Leak is fine for test harness strings; prefer static for known IDs.
+    const KNOWN: &[(&str, &str)] = &[
+        ("a01_", "A01"),
+        ("a02_", "A02"),
+        ("a03_", "A03"),
+        ("a04_", "A04"),
+        ("a05_", "A05"),
+        ("a06_", "A06"),
+        ("a07_", "A07"),
+        ("a08_", "A08"),
+        ("a09_", "A09"),
+        ("a10_", "A10"),
+        ("b01_", "B01"),
+        ("b05_", "B05"),
+        ("b06_", "B06"),
+        ("b07_", "B07"),
+        ("b11_", "B11"),
+        ("b12_", "B12"),
+        ("b14_", "B14"),
+        ("ut0_", "UT0"),
+    ];
+    for (prefix, id) in KNOWN {
+        if name.starts_with(prefix) {
+            return id;
+        }
+    }
+    // Fallback: keep a static empty-owned via Box::leak for unknown names.
+    Box::leak(name.to_string().into_boxed_str())
 }
 
 /// Timed scenario wrapper.
