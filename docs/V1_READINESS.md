@@ -94,7 +94,7 @@ _
 | **F2** | Approval path blocks auto-apply | Sensitive path / `require_firebreak_approval` holds for approval; `tif approve` / `reject` work | QA | **B07** | **Pass** (automated) |
 | **F3** | Five-Alarm current-failure gate | Historical risk alone cannot escalate; clean-room omits prior patch content (tests + one manual) | TL | **B08, B09**; phase3 unit tests | **Pass** (automated) |
 | **F4** | Verification incomplete ≠ pass | Empty/unresolved required plan fails floor | TL | **A05** | **Pass** (automated) |
-| **F5** | At least one first-class agent adapter works E2E | Full lifecycle on **one** of Claude Code / Codex / Gemini / OpenCode on Win **and** Unix: begin → implement → complete → status | DX | Protocol **B12** + **F5-smoke** installers. Runbook: [F5_VENDOR_DAY.md](F5_VENDOR_DAY.md). AI agent steps: [AGENT_Q4_F5_PLAYBOOK.md](AGENT_Q4_F5_PLAYBOOK.md) `T-F5`. **Pass:** vendor rows recorded on macOS arm64 (Claude Code 2.1.219) and Windows 10 (OpenCode 1.18.13), 2026-08-05. | **Pass** |
+| **F5** | At least one first-class agent adapter works E2E | Full lifecycle on **one** of Claude Code / Codex / Gemini / OpenCode on Win **and** Unix: begin → implement → complete → status | DX | Protocol **B12** + **F5-smoke** installers. Runbook: [F5_VENDOR_DAY.md](F5_VENDOR_DAY.md). AI agent steps: [AGENT_Q4_F5_PLAYBOOK.md](AGENT_Q4_F5_PLAYBOOK.md) `T-F5`. **Unix slice:** macOS arm64, Claude Code 2.1.219 (2026-08-05). **Windows slice:** Windows 10, OpenCode 1.18.13 (2026-08-05). Same-agent cross-OS evidence remains required. | **In progress** |
 | **F6** | CLI is supportable | Core ops documented in user-guide; `--json` protocol matches `docs/protocol/v1.md` for operations used by adapters | DX | **B11, B14**; protocol doc | **Pass** (automated + docs) |
 
 ### 3.3 Quality & release engineering
@@ -279,8 +279,9 @@ Honest fill-in for planning (update as evidence lands):
 
 **Residual Must (blocks Ready):**
 
-1. **Q3** — tag `1.0.0` + CHANGELOG section (RC is `v0.1.1-rc.1`)
-2. **Q2** — re-confirm zero open P0 issues at tag time
+1. **F5** — repeat the same first-class agent adapter on Win **and** Unix; current evidence is split between Claude Code (Unix) and OpenCode (Windows)  
+2. **Q3** — tag `1.0.0` + CHANGELOG section (RC is `v0.1.1-rc.1`)  
+3. **Q2** — re-confirm zero open P0 issues at tag time
 
 **Should residual:** P1-1 signed tag dry-run; P1-2 PM signature; P1-4/P1-7 vendor product versions; human SEC countersign on X2.
 
