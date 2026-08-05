@@ -25,7 +25,7 @@
 |------|--------|-------|
 | **Q4 Windows** | **Pass** | `v0.1.1-rc.1` — see evidence log in [RELEASE_DRY_RUN.md](RELEASE_DRY_RUN.md) |
 | **Q4 Unix** | **Pending** | Field dry-run of `scripts/install.sh` still required |
-| **F5** | **In progress** | Runbook exists; Win **and** Unix real-agent rows required |
+| **F5** | **Pass** (accepted 2026-08-05) | Split-agent Win+Unix accepted (Claude Code macOS + OpenCode Windows). Same-agent cross-OS optional. |
 | **Release tag** | `v0.1.1-rc.1` | Assets + `SHA256SUMS` published. Binary may report `tif 0.1.0` — identify by **tag + SUMS**, not version alone. |
 
 Default release tag for this playbook: **`v0.1.1-rc.1`**. Override with env `TIF_RELEASE_TAG` if a newer RC/GA tag is specified.

@@ -95,6 +95,8 @@ Update [adapters/VERSION_MATRIX.md](adapters/VERSION_MATRIX.md) with:
 
 Then flip **F5** in [V1_READINESS.md](V1_READINESS.md) to **Pass** with a link to that matrix row.
 
+**Acceptance note (2026-08-05):** Split-agent Win+Unix (Claude Code on macOS + OpenCode on Windows) was accepted as Must F5 Pass. Prefer same-agent on both OSes when easy; it is not required after this acceptance.
+
 ## Time budget
 
 ~30–60 minutes per OS if the agent product is already installed.

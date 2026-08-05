@@ -94,7 +94,7 @@ _
 | **F2** | Approval path blocks auto-apply | Sensitive path / `require_firebreak_approval` holds for approval; `tif approve` / `reject` work | QA | **B07** | **Pass** (automated) |
 | **F3** | Five-Alarm current-failure gate | Historical risk alone cannot escalate; clean-room omits prior patch content (tests + one manual) | TL | **B08, B09**; phase3 unit tests | **Pass** (automated) |
 | **F4** | Verification incomplete ≠ pass | Empty/unresolved required plan fails floor | TL | **A05** | **Pass** (automated) |
-| **F5** | At least one first-class agent adapter works E2E | Full lifecycle on **one** of Claude Code / Codex / Gemini / OpenCode on Win **and** Unix: begin → implement → complete → status | DX | Protocol **B12** + **F5-smoke** installers. Runbook: [F5_VENDOR_DAY.md](F5_VENDOR_DAY.md). AI agent steps: [AGENT_Q4_F5_PLAYBOOK.md](AGENT_Q4_F5_PLAYBOOK.md) `T-F5`. **Unix slice:** macOS arm64, Claude Code 2.1.219 (2026-08-05). **Windows slice:** Windows 10, OpenCode 1.18.13 (2026-08-05). Same-agent cross-OS evidence remains required. | **In progress** |
+| **F5** | At least one first-class agent adapter works E2E | Full lifecycle on **one** of Claude Code / Codex / Gemini / OpenCode on Win **and** Unix: begin → implement → complete → status | DX | Protocol **B12** + **F5-smoke** installers. Runbook: [F5_VENDOR_DAY.md](F5_VENDOR_DAY.md). Vendor matrix: [adapters/VERSION_MATRIX.md](adapters/VERSION_MATRIX.md). **Unix:** Claude Code 2.1.219 (macOS arm64, 2026-08-05). **Windows:** OpenCode 1.18.13 (2026-08-05). Both real products, `ok: true` / `protocol_version: 1`. **Accepted:** split-agent Win+Unix (not same product on both OSes) is **close enough** for Must F5 (operator 2026-08-05). Same-agent cross-OS remains a Should nicety. | **Pass** (accepted split-agent) |
 | **F6** | CLI is supportable | Core ops documented in user-guide; `--json` protocol matches `docs/protocol/v1.md` for operations used by adapters | DX | **B11, B14**; protocol doc | **Pass** (automated + docs) |
 
 ### 3.3 Quality & release engineering
@@ -134,10 +134,10 @@ _
 | **P1-1** | **Signed releases** | Cosign or GPG signatures published with every `v*` release; verify steps in user-guide | REL | Workflow + user-guide; needs first signed tag dry-run | In progress |
 | **P1-2** | **Published package channel** | At least **one** of: Homebrew formula live, WinGet package live, or distro package — **or** explicit “binary-only v1.0” product decision signed by PM | REL / PM | Proposed binary-only path (install scripts + GitHub Releases; Homebrew/WinGet stubs). **Not waived** until PM fills Approved-by on the draft waiver below. | **In progress** |
 | **P1-3** | Provider contract tests in CI | Mock + recorded/fixture HTTP contract tests for OpenAI-compatible response shape (no live keys required) | TL | `parse_chat_completion_content` / apply fixture tests in `providers` | **Pass** (automated) |
-| **P1-4** | Second agent adapter E2E | Second agent of the four launch set proven E2E on one OS | DX | Protocol installers + matrix for all four; vendor product E2E residual | In progress |
+| **P1-4** | Second agent adapter E2E | Second agent of the four launch set proven E2E on one OS | DX | Claude Code (Unix) + OpenCode (Windows) vendor E2E both recorded 2026-08-05 — second agent proven | **Pass** |
 | **P1-5** | aarch64 (or documented skip) | Release matrix cell green **or** “unsupported arch” listed in install docs | REL | `release.yml` builds `aarch64-unknown-linux-gnu` + `aarch64-apple-darwin` | **Pass** (release matrix) |
 | **P1-6** | Performance budgets recorded | Policy resolve p95 budget; assess on ≥10k-line diff budget; measured once on reference hardware | QA | **C03** (policy×100 + assess 10k lines); CI user-testing | **Pass** (smoke budgets) |
-| **P1-7** | Adapter version matrix | Table: agent product version × tested tif version × OS | DX | [adapters/VERSION_MATRIX.md](adapters/VERSION_MATRIX.md) has protocol placeholders only — **needs real agent product versions** | **In progress** |
+| **P1-7** | Adapter version matrix | Table: agent product version × tested tif version × OS | DX | [adapters/VERSION_MATRIX.md](adapters/VERSION_MATRIX.md) has vendor rows for Claude Code 2.1.219 (macOS) and OpenCode 1.18.13 (Windows) vs tag `v0.1.1-rc.1` | **Pass** (two products; expand as more agents soak) |
 | **P1-8** | Upgrade / uninstall tested | Install → upgrade to next RC → uninstall leaves no secrets in default paths | REL | `scripts/uninstall.{sh,ps1}` + e2e **P18** (real install scripts `--from-source` → upgrade → uninstall + secrets purge). Release-channel dry-run Pass on Win + macOS for `v0.1.1-rc.1`: [RELEASE_DRY_RUN.md](RELEASE_DRY_RUN.md) | **Pass** |
 | **P1-9** | TUI destructive ops reviewed | Rollback/purge confirmations verified manually on narrow terminal | DX | TUI unit/state tests for confirmations | Pass (unit); manual residual |
 | **P1-10** | CI write path dry-run | Template job with `allow_write` produces patch artifact only; protected branch never updated | SRE | Templates double-gated; threat-model | **Pass** (template review) |
@@ -273,21 +273,21 @@ Honest fill-in for planning (update as evidence lands):
 | Feature completeness (design) | **High** — phases 0–10 on main |
 | Automated tests / multi-OS CI | **High** — green matrix + user-testing evidence artifacts |
 | Supply chain (signing / packages) | **Medium** — checksums + optional cosign; package channel decision still open (P1-2) |
-| Field soak | **High (AI battery)** — Tiers A–D including C01 N=50; optional human vendor day residual |
+| Field soak | **High (AI battery)** — Tiers A–D including C01 N=50; F5 vendor slices Win+Unix accepted |
 | Security review | **High (internal X2)** — formal pack + threat model; human countersign residual |
 | Support readiness | **Medium** — contact path documented; no 24×7 rota |
 
 **Residual Must (blocks Ready):**
 
-1. **F5** — repeat the same first-class agent adapter on Win **and** Unix; current evidence is split between Claude Code (Unix) and OpenCode (Windows)
-2. **Q3** — tag `1.0.0` + CHANGELOG section (RC is `v0.1.1-rc.1`)
-3. **Q2** — re-confirm zero open P0 issues at tag time
+1. **Q3** — tag `1.0.0` + CHANGELOG section (RC is `v0.1.1-rc.1`; workspace currently `0.1.1`)
+2. **Q2** — re-confirm zero open P0 issues at tag time
+3. **Q1** — re-check multi-OS CI green on the commit to be tagged
 
-**Should residual:** P1-1 signed tag dry-run; P1-2 PM signature; P1-4/P1-7 vendor product versions; human SEC countersign on X2.
+**Should residual:** P1-1 signed tag dry-run; P1-2 PM signature on binary-only (or package channel); same-agent F5 cross-OS nicety; human SEC countersign on X2; broader agent matrix (N1).
 
-**Implication:** Not Ready for unconditional v1.0 until F5 (same-agent cross-OS) and tag-time Q items (Q2/Q3) clear. Q4 is Pass. Prefer messaging:
+**Implication:** Field Must items (**Q4**, **F5**) are **Pass** (F5 accepted as split-agent Win+Unix). Unconditional **v1.0** still needs tag-time Q1/Q2/Q3. Prefer messaging until tag:
 
-> **v0.1 production candidate — AI field-validated; controlled rollout toward tagged v1.0.**
+> **v0.1 production candidate — AI field-validated (Q4 + F5 accepted); ready for `v1.0.0` tag once versioning/sign-off land.**
 
 ---
 
