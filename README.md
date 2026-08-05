@@ -23,7 +23,13 @@ This Is Fine is a **local-first** adaptive restraint and simplification system f
 
 ## Status
 
-**Production phases 0–10 are complete** in tree (adapters, production TUI, distribution, GA hardening). Roadmap + residual risks: [`docs/ROADMAP.md`](docs/ROADMAP.md). Day-to-day use and recovery: [`docs/user-guide.md`](docs/user-guide.md).
+**v0.1 production candidate** — phases 0–10 are on `main` (Firebreak, adapters, TUI, distribution). Suitable for **controlled rollout and soak**, not a claim of full GA.
+
+| Doc | Purpose |
+|-----|---------|
+| [`docs/V1_READINESS.md`](docs/V1_READINESS.md) | **v1.0 readiness checklist** (Must/Should, owners, pass/fail) |
+| [`docs/ROADMAP.md`](docs/ROADMAP.md) | Phase delivery + residual risks |
+| [`docs/user-guide.md`](docs/user-guide.md) | Install and recovery |
 
 ## Features (current)
 
