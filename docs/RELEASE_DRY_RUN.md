@@ -78,4 +78,4 @@ Paste versions, OS, and links into V1_READINESS **Q4** / **P1-1** Evidence colum
 | Date | OS | Tag | Result | Operator |
 |------|-----|-----|--------|----------|
 | 2026-08-05 | Windows | v0.1.1-rc.1 | Pass — SUMS verify, install, upgrade, uninstall | AI field agent |
-| | Unix | v0.1.1-rc.1 | Pending field dry-run | |
+| 2026-08-05 | macOS (arm64) | v0.1.1-rc.1 | Pass — SUMS verify, install, upgrade, uninstall (`install.sh`) | AI field agent |
