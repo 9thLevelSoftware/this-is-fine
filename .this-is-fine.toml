@@ -1,0 +1,41 @@
+# This Is Fine — shared repository configuration (commit this file)
+version = 1
+enabled = true
+default_fire_level = 3
+
+[verification]
+# Prefer explicit commands. Leave empty and set discover = true to attempt safe discovery.
+commands = []
+discover = true
+
+[simplicity.weights]
+runtime_dependency = 100
+new_file = 25
+public_interface = 20
+abstraction = 15
+added_line = 1
+unrelated_change = 50
+
+[simplicity.limits]
+new_runtime_dependencies = 0
+
+[approval]
+sensitive_paths = []
+require_firebreak_approval = false
+
+[audit]
+tier = "redacted"
+max_age_days = 90
+max_size_mb = 1024
+
+[rollback]
+max_days = 7
+successful_commits = 3
+
+[ci]
+on_violation = "fail"
+allow_write = false
+allow_pr = false
+
+[pressure]
+include_baseline = true

@@ -1,0 +1,62 @@
+# This Is Fine — read-only CI template (GitHub Actions)
+#
+# Default behavior: assess + verify only. Never modifies protected branches.
+# Optional write/PR behavior requires explicit repository configuration
+# (ci.allow_write / ci.allow_pr in .this-is-fine.toml) and additional jobs
+# that you enable deliberately.
+#
+# Prerequisites: install the `tif` binary (release artifact or cargo install).
+
+name: this-is-fine
+
+on:
+  pull_request:
+  push:
+    branches: [main, master]
+
+jobs:
+  contain:
+    name: Damage Assessment (read-only)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install This Is Fine
+        # Replace with your preferred install method (release binary, cargo, package).
+        run: |
+          if command -v tif >/dev/null 2>&1; then
+            tif --version
+          else
+            echo "Install tif before enabling this workflow (cargo install --path crates/tif)."
+            cargo install --path crates/tif --locked || cargo install --path crates/tif
+          fi
+
+      - name: Ensure config
+        run: |
+          if [ ! -f .this-is-fine.toml ]; then
+            tif init
+          fi
+
+      - name: Inspect repository
+        run: tif inspect --json
+
+      - name: Verify (repository-native commands)
+        run: tif verify --json
+        # Allow continue for discovery-only projects; prefer fail when commands are explicit.
+        continue-on-error: false
+
+      - name: Assess working tree metrics (placeholder)
+        # Wire real git diff stats in your pipeline, e.g.:
+        #   files_added=$(git diff --diff-filter=A --name-only origin/main...HEAD | wc -l)
+        run: |
+          tif assess --json \
+            --files-added 0 \
+            --files-changed 0 \
+            --lines-added 0 \
+            --deps-added 0
+
+      # Optional write path (disabled by default — never enable without review):
+      # - name: Optional Firebreak patch artifact
+      #   if: false
+      #   run: tif firebreak --json
