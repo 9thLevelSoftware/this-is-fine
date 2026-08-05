@@ -94,7 +94,7 @@ _
 | **F2** | Approval path blocks auto-apply | Sensitive path / `require_firebreak_approval` holds for approval; `tif approve` / `reject` work | QA | **B07** | **Pass** (automated) |
 | **F3** | Five-Alarm current-failure gate | Historical risk alone cannot escalate; clean-room omits prior patch content (tests + one manual) | TL | **B08, B09**; phase3 unit tests | **Pass** (automated) |
 | **F4** | Verification incomplete ≠ pass | Empty/unresolved required plan fails floor | TL | **A05** | **Pass** (automated) |
-| **F5** | At least one first-class agent adapter works E2E | Full lifecycle on **one** of Claude Code / Codex / Gemini / OpenCode on Win **and** Unix: begin → implement → complete → status | DX | Protocol **B12** + **F5-smoke** installers. Runbook: [F5_VENDOR_DAY.md](F5_VENDOR_DAY.md). AI agent steps: [AGENT_Q4_F5_PLAYBOOK.md](AGENT_Q4_F5_PLAYBOOK.md) `T-F5`. **Pass only after vendor day rows on Win+Unix.** | **In progress** |
+| **F5** | At least one first-class agent adapter works E2E | Full lifecycle on **one** of Claude Code / Codex / Gemini / OpenCode on Win **and** Unix: begin → implement → complete → status | DX | Protocol **B12** + **F5-smoke** installers. Runbook: [F5_VENDOR_DAY.md](F5_VENDOR_DAY.md). AI agent steps: [AGENT_Q4_F5_PLAYBOOK.md](AGENT_Q4_F5_PLAYBOOK.md) `T-F5`. **Unix vendor slice Pass** (2026-08-05, macOS arm64, Claude Code 2.1.219). Windows vendor slice pending. | **In progress** |
 | **F6** | CLI is supportable | Core ops documented in user-guide; `--json` protocol matches `docs/protocol/v1.md` for operations used by adapters | DX | **B11, B14**; protocol doc | **Pass** (automated + docs) |
 
 ### 3.3 Quality & release engineering
@@ -104,7 +104,7 @@ _
 | **Q1** | Multi-OS CI green on release commit | `ubuntu`, `windows`, `macos` fmt + clippy `-D warnings` + tests pass on the commit to be tagged | REL | `.github/workflows/ci.yml` matrix + `user-testing` job | **Pass** on green main (re-check at tag) |
 | **Q2** | No open P0 bugs | Issue tracker: zero open bugs labeled `P0` / `blocker` for v1.0 | EM | 2026-08-05: zero open issues on repo (API check). **Re-check at tag.** | **Pass** (as of 2026-08-05) |
 | **Q3** | Versioning discipline | SemVer `1.0.0`; schema + protocol compatibility documented; CHANGELOG has v1.0 section | REL | Still `0.1.0`; VERSIONING.md present | Unknown (tag-time) |
-| **Q4** | Install without Rust | Clean machine (or VM) install via `scripts/install.sh` **and** `scripts/install.ps1` from a real GitHub Release asset; `tif --version` works | REL | Release [v0.1.1-rc.1](https://github.com/9thLevelSoftware/this-is-fine/releases/tag/v0.1.1-rc.1) assets + SHA256SUMS green. **Windows field Pass** (2026-08-05): `install.ps1 -Version v0.1.1-rc.1` SUMS OK → version → upgrade → uninstall. **Unix `install.sh` field dry-run still required** (AI: [AGENT_Q4_F5_PLAYBOOK.md](AGENT_Q4_F5_PLAYBOOK.md) `T-Q4-UNIX`). | **In progress** |
+| **Q4** | Install without Rust | Clean machine (or VM) install via `scripts/install.sh` **and** `scripts/install.ps1` from a real GitHub Release asset; `tif --version` works | REL | Release [v0.1.1-rc.1](https://github.com/9thLevelSoftware/this-is-fine/releases/tag/v0.1.1-rc.1) assets + SHA256SUMS green. **Windows field Pass** (2026-08-05): `install.ps1 -Version v0.1.1-rc.1` SUMS OK. **Unix field Pass** (2026-08-05, macOS arm64): `install.sh --version v0.1.1-rc.1` SUMS OK → version → upgrade → uninstall. | **Pass** |
 | **Q5** | Checksums verified in install path | Install scripts verify SHA-256 against published `SHA256SUMS` by default (refuse if missing/mismatch); documented in user-guide | REL | `scripts/lib/sha256-verify.sh` + **D01/D02**; user-guide; field Pass after tagged release dry-run | **Pass** (code + contract tests); field dry-run remaining |
 
 ### 3.4 Security & privacy
@@ -279,10 +279,9 @@ Honest fill-in for planning (update as evidence lands):
 
 **Residual Must (blocks Ready):**
 
-1. **F5** — real agent host E2E on Win **and** Unix ([F5_VENDOR_DAY.md](F5_VENDOR_DAY.md); agent steps: [AGENT_Q4_F5_PLAYBOOK.md](AGENT_Q4_F5_PLAYBOOK.md))  
-2. **Q4** — Unix `install.sh` field dry-run against a Release (Windows already recorded; criteria require both installers; agent steps: [AGENT_Q4_F5_PLAYBOOK.md](AGENT_Q4_F5_PLAYBOOK.md) `T-Q4-UNIX`)  
-3. **Q3** — tag `1.0.0` + CHANGELOG section (RC is `v0.1.1-rc.1`)  
-4. **Q2** — re-confirm zero open P0 issues at tag time  
+1. **F5** — real agent host E2E on Win **and** Unix ([F5_VENDOR_DAY.md](F5_VENDOR_DAY.md); agent steps: [AGENT_Q4_F5_PLAYBOOK.md](AGENT_Q4_F5_PLAYBOOK.md); Unix slice Pass 2026-08-05)  
+2. **Q3** — tag `1.0.0` + CHANGELOG section (RC is `v0.1.1-rc.1`)  
+3. **Q2** — re-confirm zero open P0 issues at tag time  
 
 **Should residual:** P1-1 signed tag dry-run; P1-2 PM signature; P1-4/P1-7 vendor product versions; human SEC countersign on X2.
 
