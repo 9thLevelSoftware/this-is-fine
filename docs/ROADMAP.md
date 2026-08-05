@@ -39,6 +39,8 @@ Canonical design: [`docs/superpowers/specs/2026-08-04-this-is-fine-design.md`](s
 | [user-guide.md](user-guide.md) | Install, recovery runbook |
 | [V1_READINESS.md](V1_READINESS.md) | v1.0 Must/Should checklist + soak program |
 | [USER_TESTING.md](USER_TESTING.md) | AI-executable field validation / user testing plan |
+| [security/internal-review-x2.md](security/internal-review-x2.md) | Internal X2 security review pack |
+| [adapters/VERSION_MATRIX.md](adapters/VERSION_MATRIX.md) | Adapter × OS × protocol matrix |
 | [../CHANGELOG.md](../CHANGELOG.md) | Release notes |
 
 ## Exit criteria for GA

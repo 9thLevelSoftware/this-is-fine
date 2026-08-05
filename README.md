@@ -28,8 +28,20 @@ This Is Fine is a **local-first** adaptive restraint and simplification system f
 | Doc | Purpose |
 |-----|---------|
 | [`docs/V1_READINESS.md`](docs/V1_READINESS.md) | **v1.0 readiness checklist** (Must/Should, owners, pass/fail) |
+| [`docs/USER_TESTING.md`](docs/USER_TESTING.md) | AI field-validation battery (Tiers A–D) |
 | [`docs/ROADMAP.md`](docs/ROADMAP.md) | Phase delivery + residual risks |
 | [`docs/user-guide.md`](docs/user-guide.md) | Install and recovery |
+| [`docs/security/threat-model.md`](docs/security/threat-model.md) | Threats and controls |
+
+## Support / incidents (V4)
+
+For **apply / rollback / dual-failure** incidents:
+
+1. Follow the recovery runbook in [`docs/user-guide.md`](docs/user-guide.md).  
+2. Open a GitHub issue on [9thLevelSoftware/this-is-fine](https://github.com/9thLevelSoftware/this-is-fine/issues) with label `incident` (or `P0` if data loss / silent bad apply).  
+3. Attach `tif audit --json` (redacted) and OS / `tif --version` when possible.
+
+**On-call rota:** not staffed as a 24×7 service for v0.1 — best-effort via GitHub issues. Name a human owner in `docs/V1_READINESS.md` before marketing unconditional production support.
 
 ## Features (current)
 

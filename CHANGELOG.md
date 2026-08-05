@@ -9,6 +9,14 @@ Versioning: see [docs/VERSIONING.md](docs/VERSIONING.md).
 
 ### Added
 
+- **AI field-validation battery (USER_TESTING)**
+  - `crates/tif-e2e` Tiers A–D (safety, journeys, C01 N=50 soak, local SUMS via `scripts/lib/sha256-verify.sh`)
+  - `scripts/user-test/run-all` + CI evidence pack artifacts
+- **v1.0 evidence closeout**
+  - V1_READINESS Must/Should statuses filled from automated evidence
+  - Internal security review pack (`docs/security/internal-review-x2.md`)
+  - Adapter version matrix; support contact paths in README / user-guide
+  - P1-2 binary-only package-channel waiver recorded
 - **v1.0 readiness engineering**
   - Install scripts verify release assets against `SHA256SUMS` by default (`--skip-verify` / `-SkipVerify` escape hatch)
   - Optional cosign keyful signing in the release workflow when `COSIGN_PRIVATE_KEY` is set
