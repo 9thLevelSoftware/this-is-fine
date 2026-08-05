@@ -9,6 +9,11 @@ Versioning: see [docs/VERSIONING.md](docs/VERSIONING.md).
 
 ### Added
 
+- **v1.0 readiness engineering**
+  - Install scripts verify release assets against `SHA256SUMS` by default (`--skip-verify` / `-SkipVerify` escape hatch)
+  - Optional cosign keyful signing in the release workflow when `COSIGN_PRIVATE_KEY` is set
+  - OpenAI-compatible chat completion fixture contract tests (no live network keys)
+  - Clarified Conditional go/no-go: Must (P0) items cannot be waived
 - **Phase 7 agent adapters (E2E)**
   - Windows PowerShell installers and hooks for Claude Code, Codex, Gemini CLI, OpenCode (alongside bash)
   - Adapter JSON protocol conformance tests (`tif_core::adapter_conformance`) with mocked CLI envelopes

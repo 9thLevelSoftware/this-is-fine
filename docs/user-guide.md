@@ -30,6 +30,29 @@ cargo install --path crates/tif
 
 Package managers: Homebrew formula stub in [`dist/homebrew/this-is-fine.rb`](../dist/homebrew/this-is-fine.rb); WinGet notes in [`dist/winget/README.md`](../dist/winget/README.md).
 
+### Verify release installs (checksums)
+
+Release install scripts **require** a matching `SHA256SUMS` entry for the downloaded asset (unless you pass `--skip-verify` / `-SkipVerify`).
+
+Manual check:
+
+```bash
+# Unix
+curl -fsSLO "https://github.com/9thLevelSoftware/this-is-fine/releases/download/vX.Y.Z/SHA256SUMS"
+curl -fsSLO "https://github.com/9thLevelSoftware/this-is-fine/releases/download/vX.Y.Z/tif-x86_64-unknown-linux-gnu.tar.gz"
+sha256sum -c SHA256SUMS --ignore-missing
+```
+
+Optional cosign (when the release publishes `*.sig` and you have the public key):
+
+```bash
+export COSIGN_PUBLIC_KEY=/path/to/cosign.pub
+export TIF_REQUIRE_COSIGN=1
+./scripts/install.sh --version vX.Y.Z
+```
+
+See also [V1_READINESS.md](V1_READINESS.md) items **Q4**, **Q5**, **P1-1**.
+
 ## Quick start
 
 ```bash
