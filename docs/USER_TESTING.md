@@ -403,15 +403,16 @@ cargo test -p tif-e2e a02_empty_reviewer_pool -- --nocapture
 | **UT-5** Docs close | This file current; V1_READINESS evidence filled | PR |
 | **UT-6** Recurring | Nightly/CI or on-demand AI “run full battery” | Regression |
 
-**Current status:** **UT-0 + UT-1 (Tier A) complete; Tier B partial.**  
+**Current status:** **UT-0 through UT-4 automated battery.**  
 - Crate: `crates/tif-e2e`  
 - Fixtures: `tests/user/fixtures/{rust-mini,rust-bloat,js-mini,security-sensitive}`  
-- Scripts: `scripts/user-test/run-all.sh` / `run-all.ps1`  
+- Scripts: `scripts/user-test/run-all.sh` / `run-all.ps1` / `write_evidence.py`  
 - CI: `user-testing` job on ubuntu + windows  
 - Automated IDs:  
   - **Tier A (all):** A01–A10  
-  - **Tier B:** B01, B05–B07, B11, B12, B14  
-  - **Pending:** B02–B04, B08–B10, B13, B15, Tier C soak, Tier D install
+  - **Tier B (all catalog):** B01–B15  
+  - **Tier C:** C01 (N=50 soak), C02, C03  
+  - **Tier D:** D01–D02 (local SUMS contract)
 
 ---
 
