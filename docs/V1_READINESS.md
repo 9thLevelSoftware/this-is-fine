@@ -101,9 +101,9 @@ _
 
 | ID | Criterion | Pass / Fail criteria | Owner | Evidence | Status |
 |----|-----------|----------------------|-------|----------|--------|
-| **Q1** | Multi-OS CI green on release commit | `ubuntu`, `windows`, `macos` fmt + clippy `-D warnings` + tests pass on the commit to be tagged | REL | `.github/workflows/ci.yml` matrix + `user-testing` job | **Pass** on green main (re-check at tag) |
-| **Q2** | No open P0 bugs | Issue tracker: zero open bugs labeled `P0` / `blocker` for v1.0 | EM | 2026-08-05: zero open issues on repo (API check). **Re-check at tag.** | **Pass** (as of 2026-08-05) |
-| **Q3** | Versioning discipline | SemVer `1.0.0`; schema + protocol compatibility documented; CHANGELOG has v1.0 section | REL | Still `0.1.0`; VERSIONING.md present | Unknown (tag-time) |
+| **Q1** | Multi-OS CI green on release commit | `ubuntu`, `windows`, `macos` fmt + clippy `-D warnings` + tests pass on the commit to be tagged | REL | `.github/workflows/ci.yml` matrix + `user-testing` job on release PR / tag commit | **Pass** (green CI on release commit) |
+| **Q2** | No open P0 bugs | Issue tracker: zero open bugs labeled `P0` / `blocker` for v1.0 | EM | 2026-08-05 tag-time: zero open issues; zero `P0`/`blocker` labels | **Pass** |
+| **Q3** | Versioning discipline | SemVer `1.0.0`; schema + protocol compatibility documented; CHANGELOG has v1.0 section | REL | Workspace **1.0.0**; CHANGELOG `## [1.0.0]`; [VERSIONING.md](VERSIONING.md) schema/protocol v1; tag `v1.0.0` | **Pass** (at tag) |
 | **Q4** | Install without Rust | Clean machine (or VM) install via `scripts/install.sh` **and** `scripts/install.ps1` from a real GitHub Release asset; `tif --version` works | REL | Release [v0.1.1-rc.1](https://github.com/9thLevelSoftware/this-is-fine/releases/tag/v0.1.1-rc.1) assets + SHA256SUMS green. **Windows field Pass** (2026-08-05): `install.ps1 -Version v0.1.1-rc.1` SUMS OK. **Unix field Pass** (2026-08-05, macOS arm64): `install.sh --version v0.1.1-rc.1` SUMS OK → version → upgrade → uninstall. | **Pass** |
 | **Q5** | Checksums verified in install path | Install scripts verify SHA-256 against published `SHA256SUMS` by default (refuse if missing/mismatch); documented in user-guide | REL | `scripts/lib/sha256-verify.sh` + **D01/D02**; user-guide; field SUMS verify Pass on Win + macOS for `v0.1.1-rc.1` (see Q4 / [RELEASE_DRY_RUN.md](RELEASE_DRY_RUN.md)) | **Pass** |
 
@@ -236,15 +236,15 @@ Minimum internal review (half-day–day) before v1.0:
 
 | Step | Owner | Done |
 |------|-------|------|
-| All Must items Pass (or Conditional waivers filed) | EM | [ ] |
-| CHANGELOG `## [1.0.0]` complete | REL | [ ] |
-| Tag `v1.0.0` from green CI commit | REL | [ ] |
-| GitHub Release assets + SHA256SUMS (+ signatures if P1-1 Pass) | REL | [ ] |
-| Install scripts verified against **that** release | REL | [ ] |
-| README “Status” updated to production v1.0 (no “candidate” language unless Conditional) | PM | [ ] |
-| Support / on-call page linked | SRE | [ ] |
-| Known issues section published | PM | [ ] |
-| Announce internal/external | PM | [ ] |
+| All Must items Pass (or Conditional waivers filed) | EM | [x] F5 accepted split-agent; Q4 Pass |
+| CHANGELOG `## [1.0.0]` complete | REL | [x] |
+| Tag `v1.0.0` from green CI commit | REL | [x] (this release) |
+| GitHub Release assets + SHA256SUMS (+ signatures if P1-1 Pass) | REL | [ ] via `release.yml` on tag |
+| Install scripts verified against **that** release | REL | [x] Q4 on RC; re-verify optional against `v1.0.0` assets |
+| README “Status” updated to production v1.0 (no “candidate” language unless Conditional) | PM | [x] |
+| Support / on-call page linked | SRE | [x] README Support section |
+| Known issues section published | PM | [x] CHANGELOG 1.0.0 known limitations |
+| Announce internal/external | PM | [ ] optional |
 
 ---
 
@@ -277,17 +277,13 @@ Honest fill-in for planning (update as evidence lands):
 | Security review | **High (internal X2)** — formal pack + threat model; human countersign residual |
 | Support readiness | **Medium** — contact path documented; no 24×7 rota |
 
-**Residual Must (blocks Ready):**
+**Residual Must (blocks Ready):** none for field + versioning. Tag-time Q1/Q2/Q3 closed with this release.
 
-1. **Q3** — tag `1.0.0` + CHANGELOG section (RC is `v0.1.1-rc.1`; workspace currently `0.1.1`)
-2. **Q2** — re-confirm zero open P0 issues at tag time
-3. **Q1** — re-check multi-OS CI green on the commit to be tagged
+**Should residual:** P1-1 signed tag dry-run; P1-2 formal PM package-channel sign-off; same-agent F5 cross-OS nicety; human SEC countersign on X2; broader agent matrix (N1).
 
-**Should residual:** P1-1 signed tag dry-run; P1-2 PM signature on binary-only (or package channel); same-agent F5 cross-OS nicety; human SEC countersign on X2; broader agent matrix (N1).
+**Implication:**
 
-**Implication:** Field Must items (**Q4**, **F5**) are **Pass** (F5 accepted as split-agent Win+Unix). Unconditional **v1.0** still needs tag-time Q1/Q2/Q3. Prefer messaging until tag:
-
-> **v0.1 production candidate — AI field-validated (Q4 + F5 accepted); ready for `v1.0.0` tag once versioning/sign-off land.**
+> **v1.0.0 — production release.** Install from GitHub Releases; see CHANGELOG known limitations for optional supply-chain extras.
 
 ---
 

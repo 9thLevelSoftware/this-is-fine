@@ -2,7 +2,7 @@
 
 ## Crate / product version (SemVer)
 
-Workspace package version (currently `0.1.0`) follows SemVer for the `tif` binary and `tif-core` crate:
+Workspace package version (currently `1.0.0`) follows SemVer for the `tif` binary and `tif-core` crate:
 
 | Bump | When |
 |------|------|
@@ -10,7 +10,7 @@ Workspace package version (currently `0.1.0`) follows SemVer for the `tif` binar
 | **MINOR** | Backward-compatible features (new commands, additive JSON fields) |
 | **PATCH** | Bug fixes, docs, internal refactors |
 
-Pre-1.0: MINOR may include breaking changes if called out in CHANGELOG; still avoid silent protocol breaks.
+From 1.0.0 onward: breaking CLI/`tif-core` public API changes require a MAJOR bump. Avoid silent protocol breaks (use `protocol_version`).
 
 ## Config schema version
 

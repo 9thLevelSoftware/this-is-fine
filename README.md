@@ -23,7 +23,7 @@ This Is Fine is a **local-first** adaptive restraint and simplification system f
 
 ## Status
 
-**v0.1 production candidate** — phases 0–10 are on `main` (Firebreak, adapters, TUI, distribution). Suitable for **controlled rollout and soak**, not a claim of full GA.
+**v1.0.0** — production-ready release. Phases 0–10 on `main` (Firebreak, adapters, TUI, distribution). Field Must items (install dry-run Q4, vendor F5) recorded in [`docs/V1_READINESS.md`](docs/V1_READINESS.md).
 
 | Doc | Purpose |
 |-----|---------|
@@ -43,7 +43,7 @@ For **apply / rollback / dual-failure** incidents:
 2. Open a GitHub issue on [9thLevelSoftware/this-is-fine](https://github.com/9thLevelSoftware/this-is-fine/issues) with label `incident` (or `P0` if data loss / silent bad apply).  
 3. Attach `tif audit --json` (redacted) and OS / `tif --version` when possible.
 
-**Rota:** best-effort via GitHub Issues (not 24×7 SLA for v0.1).
+**Rota:** best-effort via GitHub Issues (not 24×7 SLA).
 
 ## Features (current)
 
