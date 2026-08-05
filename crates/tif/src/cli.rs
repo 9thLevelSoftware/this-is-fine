@@ -50,6 +50,12 @@ pub enum Commands {
         deps_added: u32,
         #[arg(long)]
         fire_level: Option<u8>,
+        /// Derive metrics from `git status` / `git diff` in the repository.
+        #[arg(long)]
+        from_git: bool,
+        /// Read a unified diff from this file (or `-` for stdin).
+        #[arg(long)]
+        from_diff: Option<PathBuf>,
     },
     /// Run Firebreak simplification (isolated; fail-safe).
     Firebreak {
@@ -63,6 +69,21 @@ pub enum Commands {
         lines_added: u32,
         #[arg(long, default_value_t = 0)]
         deps_added: u32,
+        /// Derive original metrics from git when not using a prior run.
+        #[arg(long)]
+        from_git: bool,
+        /// Stage this directory as the isolated candidate tree and re-verify before apply.
+        #[arg(long)]
+        candidate: Option<PathBuf>,
+        /// Authorize filesystem apply of a re-verified smaller candidate.
+        #[arg(long)]
+        apply: bool,
+        /// Invoke authorized reviewer backend in isolation (no apply; Phase 1).
+        #[arg(long)]
+        invoke_backend: bool,
+        /// Optional task text for backend context.
+        #[arg(long)]
+        task: Option<String>,
     },
     /// Get or set Fire Level (1–4 initial; 5 is escalation-only).
     #[command(name = "fire-level")]
@@ -105,12 +126,37 @@ pub enum Commands {
         #[arg(long)]
         plan: bool,
     },
-    /// Interactive TUI (scaffolded).
+    /// Interactive TUI (keyboard-driven; every action has a CLI equivalent).
     Tui,
     /// Local adaptation stats and recommendations.
     Adaptation {
         #[arg(long, default_value_t = true)]
         show: bool,
+    },
+    /// Authorized reviewer pool operations (local config only).
+    #[command(subcommand)]
+    Reviewer(ReviewerCmd),
+}
+
+/// Reviewer pool: list, probe connectivity, offline test with mock.
+#[derive(Debug, Subcommand)]
+pub enum ReviewerCmd {
+    /// List authorized reviewers from config and compiled backends.
+    List,
+    /// Probe connectivity / readiness for one reviewer (or all).
+    Probe {
+        /// Reviewer id; omit to probe all.
+        #[arg(long)]
+        id: Option<String>,
+    },
+    /// Offline dry-run: invoke mock/process backend in a temp isolation tree (no apply).
+    Test {
+        /// Reviewer id (default: first mock-capable entry, else first pool entry).
+        #[arg(long)]
+        id: Option<String>,
+        /// Optional task text for context packaging.
+        #[arg(long)]
+        task: Option<String>,
     },
 }
 
@@ -156,6 +202,9 @@ pub enum RunCmd {
         deps_added: u32,
         #[arg(long)]
         auto_firebreak: bool,
+        /// Derive metrics from git working tree instead of explicit flags.
+        #[arg(long)]
+        from_git: bool,
         /// Trusted-adapter signal: verification already ran outside tif.
         /// Not re-executed; omit in CI and use `tif verify` instead.
         #[arg(long)]

@@ -83,6 +83,7 @@ impl ReviewerSelector {
             sb.partial_cmp(&sa)
                 .unwrap_or(std::cmp::Ordering::Equal)
                 .then_with(|| b.priority.cmp(&a.priority))
+                .then_with(|| a.id.cmp(&b.id))
         });
 
         let best = ranked[0];
@@ -134,17 +135,7 @@ mod tests {
     use super::*;
 
     fn rev(id: &str, priority: i32) -> ReviewerConfig {
-        ReviewerConfig {
-            id: id.into(),
-            provider: "mock".into(),
-            model: id.into(),
-            endpoint: None,
-            credential_ref: None,
-            allow_source_egress: false,
-            eligible_task_types: vec![],
-            max_firebreak_attempts: 2,
-            priority,
-        }
+        ReviewerConfig::mock(id, priority)
     }
 
     #[test]

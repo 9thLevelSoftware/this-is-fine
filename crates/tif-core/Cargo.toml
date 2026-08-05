@@ -9,6 +9,17 @@ rust-version.workspace = true
 description = "This Is Fine — core library for adaptive restraint and simplification of coding agents"
 readme = "../../README.md"
 
+[features]
+default = ["provider-mock", "provider-openai-compatible", "provider-process"]
+## Offline mock reviewer backend (tests / CI). Always safe; no network.
+provider-mock = []
+## OpenAI-compatible HTTP reviewer.
+provider-openai-compatible = ["dep:ureq"]
+## Anthropic Messages API reviewer (scaffold; shares HTTP stack).
+provider-anthropic = ["dep:ureq"]
+## Local process / CLI wrapper reviewer.
+provider-process = []
+
 [dependencies]
 anyhow.workspace = true
 chrono.workspace = true
@@ -22,6 +33,7 @@ thiserror.workspace = true
 toml.workspace = true
 uuid.workspace = true
 walkdir.workspace = true
+ureq = { workspace = true, optional = true }
 
 [dev-dependencies]
 tempfile.workspace = true

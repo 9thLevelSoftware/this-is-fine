@@ -15,9 +15,9 @@ Canonical operations:
 ```text
 tif policy resolve --json
 tif run begin --json --task "…"
-tif run complete --json <run_id> --lines-added N …
-tif assess --json --lines-added N …
-tif firebreak --json
+tif run complete --json <run_id> --from-git
+tif assess --json --from-git
+tif firebreak --json [--candidate PATH --apply]
 tif verify --json
 tif rollback --json <run_id>
 tif audit show --json
@@ -35,30 +35,26 @@ Responses use the envelope:
 
 On failure: `"ok": false` and `"error": "…"`.
 
-Human-readable CLI output and JSON are generated from the same domain results.
+## First-class adapters (installable artifacts)
+
+| Agent | Directory | Artifacts |
+|---|---|---|
+| Claude Code | [`claude-code/`](claude-code/) | `SKILL.md`, session hook, `install.md` |
+| Codex | [`codex/`](codex/) | `AGENTS.snippet.md`, `tif-bridge.sh`, `install.md` |
+| Gemini CLI | [`gemini-cli/`](gemini-cli/) | `generate-context.sh`, `install.md` |
+| OpenCode | [`opencode/`](opencode/) | `plugin.json`, `inject.md`, `install.md` |
+
+Each adapter directory has an **`install.md`** with activation steps. Adapters are intentionally thin: policy compilation, scoring, verification, Firebreak, isolation, and audit remain in the Rust core.
 
 ## Adapter responsibilities
-
-An adapter must be able to:
 
 - Announce task start and completion
 - Request a compiled policy (`tif policy resolve`)
 - Inject or reference the policy through supported native mechanisms
-- Supply task text (or a safe digest), repository path, and agent/model identity
-- Submit completion metrics / diff summary
-- Display compact status (`🔥 Containment active · Fire Level N`)
-- Invoke Firebreak and rollback operations
-
-## First-class adapters
-
-| Agent | Directory | Notes |
-|---|---|---|
-| Claude Code | [`claude-code/`](claude-code/) | Skills / hooks injection |
-| Codex | [`codex/`](codex/) | Instructions + CLI bridge |
-| Gemini CLI | [`gemini-cli/`](gemini-cli/) | Context file / flags |
-| OpenCode | [`opencode/`](opencode/) | Plugin-style bridge |
-
-Adapters are intentionally thin. Policy compilation, scoring, verification, Firebreak, and audit remain in the Rust core.
+- Supply task text, repository path, and agent/model identity
+- Submit completion metrics (`--from-git` preferred)
+- Display compact status
+- Invoke Firebreak and rollback
 
 ## Local-only rule
 

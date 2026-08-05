@@ -1,0 +1,62 @@
+# This Is Fine — multi-OS engineering CI
+#
+# Product containment CI for *consumer* repos lives under ci/github-actions/.
+# This workflow validates the tif codebase itself on every PR/push.
+
+name: ci
+
+on:
+  push:
+    branches: [main, master, feat/**]
+  pull_request:
+    branches: [main, master]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-D warnings"
+
+jobs:
+  check:
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: tif-${{ matrix.os }}
+
+      - name: Format
+        run: cargo fmt --all -- --check
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+      - name: Test
+        run: cargo test --workspace --all-features
+
+      - name: Build release binary
+        run: cargo build --release -p tif
+
+      - name: Smoke CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          BIN=target/release/tif
+          if [[ "${{ runner.os }}" == "Windows" ]]; then
+            BIN=target/release/tif.exe
+          fi
+          "$BIN" --version
+          "$BIN" init --force
+          "$BIN" policy resolve --task "smoke test containment" --json | head -c 200

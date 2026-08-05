@@ -1,25 +1,37 @@
 //! This Is Fine CLI (`tif`).
 
 mod cli;
+mod tui_app;
 
 use anyhow::Context;
 use clap::Parser;
-use cli::{Cli, Commands, PolicyCmd, RunCmd};
+use cli::{Cli, Commands, PolicyCmd, ReviewerCmd, RunCmd};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use tif_core::assess::{AssessmentStatus, DamageAssessor};
 use tif_core::audit::{compact_status, AuditStore};
 use tif_core::config::{
-    apply_cli_overrides, init_repository, load_config, RepoPaths, SHARED_CONFIG_NAME,
+    apply_cli_overrides, ensure_state_dirs, init_repository, load_config, RepoPaths,
+    SHARED_CONFIG_NAME,
+};
+use tif_core::credentials::resolve_credential_opt;
+use tif_core::diff::{
+    metrics_from_git, metrics_from_tree_absolute, metrics_from_unified_diff_checked,
 };
 use tif_core::fire_level::FireLevel;
+use tif_core::firebreak::{
+    candidate_floor_from_verification, BackendGenerateRequest, FirebreakEngine,
+};
 use tif_core::inspector::{find_repo_root, RepositoryInspector};
+use tif_core::isolation::isolator_for_session;
 use tif_core::orchestrator::{BeginRunRequest, RunOrchestrator, RunState};
 use tif_core::policy::{PolicyCompileRequest, PolicyCompiler};
 use tif_core::protocol::{
     AssessResult, FireLevelResult, JsonResponse, PolicyResolveResult, RollbackResult,
     RunBeginResult, VerifyResult,
 };
+use tif_core::providers::{backend_for_provider, BackendRegistry};
+use tif_core::reviewer::ReviewerSelector;
 use tif_core::scoring::{CorrectnessFloor, DiffMetrics, SimplicityScorer};
 use tif_core::verify::{plan_and_run, VerificationPlanner};
 use tif_core::{AdaptationEngine, FiveAlarmPlan};
@@ -59,23 +71,32 @@ fn run() -> anyhow::Result<ExitCode> {
                 lines_removed,
                 deps_added,
                 auto_firebreak,
+                from_git,
                 verification_passed,
-            } => cmd_run_complete(
-                &root,
-                &run_id,
-                DiffMetrics {
-                    runtime_dependencies_added: deps_added,
-                    files_added,
-                    files_changed,
-                    files_deleted: 0,
-                    lines_added,
-                    lines_removed,
-                    ..Default::default()
-                },
-                auto_firebreak,
-                verification_passed,
-                json,
-            ),
+            } => {
+                let metrics = resolve_metrics(
+                    &root,
+                    from_git,
+                    None,
+                    DiffMetrics {
+                        runtime_dependencies_added: deps_added,
+                        files_added,
+                        files_changed,
+                        files_deleted: 0,
+                        lines_added,
+                        lines_removed,
+                        ..Default::default()
+                    },
+                )?;
+                cmd_run_complete(
+                    &root,
+                    &run_id,
+                    metrics,
+                    auto_firebreak,
+                    verification_passed,
+                    json,
+                )
+            }
             RunCmd::Show { run_id } => cmd_run_show(&root, &run_id, json),
             RunCmd::Status => cmd_run_status(&root, json),
         },
@@ -86,37 +107,59 @@ fn run() -> anyhow::Result<ExitCode> {
             lines_removed,
             deps_added,
             fire_level,
-        } => cmd_assess(
-            &root,
-            DiffMetrics {
-                runtime_dependencies_added: deps_added,
-                files_added,
-                files_changed,
-                lines_added,
-                lines_removed,
-                ..Default::default()
-            },
-            fire_level,
-            json,
-        ),
+            from_git,
+            from_diff,
+        } => {
+            let metrics = resolve_metrics(
+                &root,
+                from_git,
+                from_diff.as_ref(),
+                DiffMetrics {
+                    runtime_dependencies_added: deps_added,
+                    files_added,
+                    files_changed,
+                    lines_added,
+                    lines_removed,
+                    ..Default::default()
+                },
+            )?;
+            cmd_assess(&root, metrics, fire_level, json)
+        }
         Commands::Firebreak {
             run_id,
             files_added,
             files_changed,
             lines_added,
             deps_added,
-        } => cmd_firebreak(
-            &root,
-            run_id,
-            DiffMetrics {
-                runtime_dependencies_added: deps_added,
-                files_added,
-                files_changed,
-                lines_added,
-                ..Default::default()
-            },
-            json,
-        ),
+            from_git,
+            candidate,
+            apply,
+            invoke_backend,
+            task,
+        } => {
+            let metrics = resolve_metrics(
+                &root,
+                from_git,
+                None,
+                DiffMetrics {
+                    runtime_dependencies_added: deps_added,
+                    files_added,
+                    files_changed,
+                    lines_added,
+                    ..Default::default()
+                },
+            )?;
+            cmd_firebreak(
+                &root,
+                run_id,
+                metrics,
+                candidate,
+                apply,
+                invoke_backend,
+                task,
+                json,
+            )
+        }
         Commands::FireLevel { level } => match level {
             None => cmd_fire_level_get(&root, json),
             Some(level) => cmd_fire_level_set(&root, level, json),
@@ -158,20 +201,52 @@ fn run() -> anyhow::Result<ExitCode> {
             }
             Ok(ExitCode::SUCCESS)
         }
-        Commands::Tui => {
-            eprintln!(
-                "TUI is scaffolded for a later pass. Use CLI commands (every TUI action has a CLI equivalent)."
-            );
-            eprintln!("Try: tif status | tif assess | tif audit show | tif policy resolve");
-            Ok(ExitCode::from(2))
-        }
+        Commands::Tui => match tui_app::run_tui(&root) {
+            Ok(()) => Ok(ExitCode::SUCCESS),
+            Err(e) => {
+                eprintln!("error: {e:#}");
+                eprintln!("Hint: every TUI action has a CLI equivalent (tif status, tif assess, tif audit show).");
+                Ok(ExitCode::from(2))
+            }
+        },
         Commands::Adaptation { show } => cmd_adaptation(&root, show, json),
+        Commands::Reviewer(sub) => match sub {
+            ReviewerCmd::List => cmd_reviewer_list(&root, json),
+            ReviewerCmd::Probe { id } => cmd_reviewer_probe(&root, id, json),
+            ReviewerCmd::Test { id, task } => cmd_reviewer_test(&root, id, task, json),
+        },
     }
 }
 
 fn resolve_root(repo: Option<PathBuf>) -> anyhow::Result<PathBuf> {
     let start = repo.unwrap_or(std::env::current_dir()?);
     Ok(find_repo_root(&start))
+}
+
+/// Resolve metrics from git, a unified diff file, or explicit CLI flags.
+fn resolve_metrics(
+    root: &Path,
+    from_git: bool,
+    from_diff: Option<&PathBuf>,
+    explicit: DiffMetrics,
+) -> anyhow::Result<DiffMetrics> {
+    if let Some(path) = from_diff {
+        let text = if path.as_os_str() == "-" {
+            use std::io::Read;
+            let mut buf = String::new();
+            std::io::stdin().read_to_string(&mut buf)?;
+            buf
+        } else {
+            std::fs::read_to_string(path)
+                .with_context(|| format!("read diff file {}", path.display()))?
+        };
+        return metrics_from_unified_diff_checked(&text)
+            .context("parsing unified diff (size-capped at 64 MiB)");
+    }
+    if from_git {
+        return metrics_from_git(root).context("collecting git metrics");
+    }
+    Ok(explicit)
 }
 
 fn emit<T: serde::Serialize, F: FnOnce(&T)>(value: &T, json: bool, human: F) {
@@ -509,16 +584,26 @@ fn cmd_assess(
     Ok(code)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn cmd_firebreak(
     root: &Path,
     run_id: Option<String>,
     metrics: DiffMetrics,
+    candidate: Option<PathBuf>,
+    authorize_apply: bool,
+    invoke_backend: bool,
+    task: Option<String>,
     json: bool,
 ) -> anyhow::Result<ExitCode> {
     let cfg = load_config(root)?;
     let paths = RepoPaths::for_root(root);
+    ensure_state_dirs(&paths)?;
     let store = AuditStore::open(&paths, &cfg.audit)?;
     let orch = RunOrchestrator::new();
+
+    if invoke_backend {
+        return cmd_firebreak_invoke_backend(root, &cfg, &paths, metrics, task, json);
+    }
 
     let mut run = if let Some(id) = run_id {
         store
@@ -598,14 +683,121 @@ fn cmd_firebreak(
         .as_ref()
         .map(|a| a.correctness.clone())
         .unwrap_or_else(CorrectnessFloor::all_pass);
-    orch.run_firebreak(&cfg, &mut run, &floor)?;
-    store.record_run(&run)?;
+
+    if let Some(candidate_path) = candidate {
+        // Isolated path: stage candidate, re-verify in isolation workspace, optionally apply.
+        let (isolator, mut session) =
+            FirebreakEngine::open_workspace(root, &paths.state_dir, run.id.as_str())?;
+        FirebreakEngine::stage_candidate_tree(&session, &candidate_path)?;
+        run.events.push(format!(
+            "staged candidate tree from {}",
+            candidate_path.display()
+        ));
+
+        // Persist isolation session BEFORE apply so crash/dual-failure still has
+        // a recoverable session on disk (attach → record → apply → record).
+        run.isolation_session = Some(session.clone());
+        store.record_run(&run)?;
+
+        // Re-verify against the isolated workspace path only — never fall back to
+        // the original repo (that would re-verify the wrong tree).
+        let inspection = RepositoryInspector::new()
+            .inspect(&session.path)
+            .with_context(|| {
+                format!(
+                    "failed to inspect isolation workspace {}",
+                    session.path.display()
+                )
+            })?;
+        // Propagate plan/run errors (include them in events). Incomplete plans are
+        // already returned as Ok(report) with incomplete_plan=true — do not swallow
+        // real errors into a silent synthetic Failed report.
+        let report = match plan_and_run(&session.path, &cfg.verification, Some(&inspection), false)
+        {
+            Ok(r) => {
+                if r.incomplete_plan {
+                    run.events.push(
+                        "isolated verification plan incomplete (no required checks ran)".into(),
+                    );
+                }
+                r
+            }
+            Err(e) => {
+                let err_msg = format!("isolated verification plan_and_run failed: {e}");
+                run.events.push(err_msg.clone());
+                // Persist session + events before failing so operators can inspect.
+                run.isolation_session = Some(session.clone());
+                let _ = store.record_run(&run);
+                return Err(anyhow::anyhow!(err_msg));
+            }
+        };
+
+        let candidate_floor = candidate_floor_from_verification(&report);
+        // Ranking metrics must be the same *kind* on both sides.
+        // Prefer git metrics for the candidate when available (worktree).
+        // Otherwise use absolute tree weight for BOTH original and candidate —
+        // never source↔candidate deltas (identical trees score ~0 and fail-open).
+        let (candidate_metrics, ranking_original_metrics, ranking_original_score) =
+            match metrics_from_git(&session.path) {
+                Ok(m) => (m, None, None),
+                Err(_) => {
+                    let orig_abs = metrics_from_tree_absolute(root).with_context(|| {
+                        format!(
+                            "cannot collect absolute tree metrics for original {}",
+                            root.display()
+                        )
+                    })?;
+                    let cand_abs =
+                        metrics_from_tree_absolute(&session.path).with_context(|| {
+                            format!(
+                                "cannot collect absolute tree metrics for candidate {}",
+                                session.path.display()
+                            )
+                        })?;
+                    let policy = run
+                        .policy
+                        .as_ref()
+                        .ok_or_else(|| anyhow::anyhow!("run missing policy"))?;
+                    let scorer =
+                        SimplicityScorer::new(policy.weights.clone(), policy.limits.clone());
+                    let orig_score = scorer.score(&orig_abs, &floor);
+                    run.events.push(
+                        "ranking uses absolute tree metrics for original and candidate (no git)"
+                            .into(),
+                    );
+                    (cand_abs, Some(orig_abs), Some(orig_score))
+                }
+            };
+
+        let fb_result = orch.run_firebreak_isolated(
+            &cfg,
+            &mut run,
+            tif_core::orchestrator::IsolatedFirebreakParams {
+                original_floor: &floor,
+                isolator: isolator.as_ref(),
+                session: &mut session,
+                candidate_metrics,
+                candidate_floor,
+                authorize_apply,
+                ranking_original_metrics,
+                ranking_original_score,
+            },
+        );
+        // Re-persist after apply (applied / restore_pending / baseline_path).
+        store.record_run(&run)?;
+        fb_result?;
+    } else {
+        // Production fail-closed path (no candidate tree staged).
+        orch.run_firebreak(&cfg, &mut run, &floor)?;
+        store.record_run(&run)?;
+    }
 
     Ok(emit_ok(
         serde_json::json!({
             "run_id": run.id.as_str(),
             "state": run.state,
             "firebreak": run.firebreak,
+            "isolation": run.isolation_session,
         }),
         json,
         |_| {
@@ -613,6 +805,9 @@ fn cmd_firebreak(
                 println!("{}", fb.message);
                 println!("applied: {}", fb.applied);
                 println!("original_preserved: {}", fb.original_preserved);
+                if let Some(ref s) = run.isolation_session {
+                    println!("isolation: {} ({:?})", s.id, s.kind);
+                }
             } else {
                 println!("no firebreak outcome");
             }
@@ -673,27 +868,68 @@ fn cmd_fire_level_set(root: &Path, level: u8, json: bool) -> anyhow::Result<Exit
 
 fn cmd_rollback(root: &Path, run_id: &str, json: bool) -> anyhow::Result<ExitCode> {
     let cfg = load_config(root)?;
-    let store = AuditStore::open(&RepoPaths::for_root(root), &cfg.audit)?;
+    let paths = RepoPaths::for_root(root);
+    let store = AuditStore::open(&paths, &cfg.audit)?;
     let mut run = store
         .get_run(run_id)?
         .with_context(|| format!("run not found: {run_id}"))?;
 
-    // Scaffold: marks rollback intent; full patch restore uses isolation backends.
-    run.events
-        .push("rollback requested (logical mark; workspace patch restore not yet wired)".into());
-    run.state = RunState::Restored;
-    run.rollback_candidate_id = Some("original".into());
+    let orch = RunOrchestrator::new();
+    let (restored_fs, reason, message) = if let Some(ref session) = run.isolation_session {
+        if session.applied || session.restore_pending {
+            let isolator = isolator_for_session(session, &paths.snapshots_dir());
+            match orch.rollback_isolation(&mut run, isolator.as_ref()) {
+                Ok(()) => (
+                    true,
+                    Some("restored".to_string()),
+                    "Filesystem rollback restored original from baseline; audit updated"
+                        .to_string(),
+                ),
+                Err(e) => {
+                    run.events.push(format!("rollback failed: {e}"));
+                    store.record_run(&run)?;
+                    return Ok(emit_err(format!("filesystem rollback failed: {e}"), json));
+                }
+            }
+        } else {
+            run.events.push(
+                "rollback requested; isolation session was never applied (original intact)".into(),
+            );
+            run.state = RunState::Restored;
+            run.rollback_candidate_id = Some("original".into());
+            (
+                false,
+                Some("never_applied".to_string()),
+                "Original workspace was never modified; noop (audit marked restored)".to_string(),
+            )
+        }
+    } else {
+        run.events.push(
+            "rollback requested; no isolation session (original workspace never modified by apply)"
+                .into(),
+        );
+        run.state = RunState::Restored;
+        run.rollback_candidate_id = Some("original".into());
+        (
+            false,
+            Some("noop".to_string()),
+            "No Firebreak apply on record; original preserved (audit marked restored)".to_string(),
+        )
+    };
+
     store.record_run(&run)?;
 
     let result = RollbackResult {
         run_id: run_id.into(),
-        restored: true,
-        message:
-            "Rollback marked in audit (logical); filesystem restore requires isolation backend"
-                .into(),
+        restored: restored_fs,
+        reason,
+        message,
     };
     Ok(emit_ok(result, json, |r| {
         println!("{}", r.message);
+        if let Some(ref reason) = r.reason {
+            println!("reason: {reason}");
+        }
     }))
 }
 
@@ -860,6 +1096,289 @@ fn cmd_status(root: &Path, json: bool) -> anyhow::Result<ExitCode> {
         println!("audit:    {}", cfg.audit.tier);
         println!("reviewers: {}", cfg.reviewers.len());
     }))
+}
+
+fn cmd_firebreak_invoke_backend(
+    root: &Path,
+    cfg: &tif_core::Config,
+    paths: &RepoPaths,
+    metrics: DiffMetrics,
+    task: Option<String>,
+    json: bool,
+) -> anyhow::Result<ExitCode> {
+    if cfg.reviewers.is_empty() {
+        return Ok(emit_err(
+            "no reviewers authorized in local config; add [[reviewers]] to .this-is-fine.local.toml",
+            json,
+        ));
+    }
+    let policy = PolicyCompiler::new().compile(
+        cfg,
+        &PolicyCompileRequest {
+            task_text: task.clone(),
+            ..Default::default()
+        },
+    )?;
+    let scorer = SimplicityScorer::new(policy.weights.clone(), policy.limits.clone());
+    let floor = CorrectnessFloor::all_pass();
+    let original_score = scorer.score(&metrics, &floor);
+    let engine = FirebreakEngine::new(ReviewerSelector::new(cfg.reviewers.clone()));
+    let result = engine.generate_with_backend(BackendGenerateRequest {
+        run_id: format!("cli-{}", chrono_like_id()),
+        policy,
+        source_root: root.to_path_buf(),
+        state_dir: paths.state_dir.clone(),
+        original_metrics: metrics,
+        original_score,
+        original_floor: floor,
+        task_text: task,
+        acceptance_criteria: None,
+        source_or_diff: None,
+        verification_plan_summary: Some("use repository verification plan after generation".into()),
+        max_output_bytes: 8_000_000,
+    })?;
+
+    let data = serde_json::json!({
+        "outcome": result.outcome,
+        "isolation_session_id": result.session.id,
+        "isolation_path": result.session.path,
+        "candidate_path": result.patch.as_ref().map(|p| p.candidate_root.clone()),
+        "notes": result.patch.as_ref().map(|p| p.notes.clone()),
+        "applied": false,
+        "original_preserved": true,
+    });
+    let code = if result.outcome.success {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::from(1)
+    };
+    if json {
+        println!("{}", serde_json::to_string_pretty(&JsonResponse::ok(data))?);
+    } else {
+        println!("{}", result.outcome.message);
+        println!("isolation: {}", result.session.path.display());
+        if let Some(p) = result.patch.as_ref() {
+            println!("candidate: {}", p.candidate_root.display());
+        }
+        println!("(not applied — re-verify then tif firebreak --candidate … --apply)");
+    }
+    Ok(code)
+}
+
+fn chrono_like_id() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let n = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    format!("{n:x}")
+}
+
+fn cmd_reviewer_list(root: &Path, json: bool) -> anyhow::Result<ExitCode> {
+    let cfg = load_config(root)?;
+    let reg = BackendRegistry::new();
+    let compiled = reg.list_kinds();
+    let rows: Vec<serde_json::Value> = cfg
+        .reviewers
+        .iter()
+        .map(|r| {
+            let backend_ok = backend_for_provider(&reg, &r.provider).is_ok();
+            serde_json::json!({
+                "id": r.id,
+                "provider": r.provider,
+                "model": r.model,
+                "endpoint": r.endpoint,
+                "allow_source_egress": r.allow_source_egress,
+                "priority": r.priority,
+                "max_firebreak_attempts": r.max_firebreak_attempts,
+                "timeout_secs": r.timeout_secs,
+                "backend_compiled": backend_ok,
+                "credential_ref_set": r.credential_ref.is_some(),
+            })
+        })
+        .collect();
+    let data = serde_json::json!({
+        "compiled_backends": compiled,
+        "reviewers": rows,
+    });
+    Ok(emit_ok(data, json, |d| {
+        println!("compiled backends: {:?}", d["compiled_backends"]);
+        println!("authorized reviewers: {}", cfg.reviewers.len());
+        for r in &cfg.reviewers {
+            let ok = backend_for_provider(&reg, &r.provider).is_ok();
+            println!(
+                "  - {}  provider={} model={} egress={} backend={}",
+                r.id,
+                r.provider,
+                r.model,
+                r.allow_source_egress,
+                if ok { "yes" } else { "NO" }
+            );
+        }
+        if cfg.reviewers.is_empty() {
+            println!("(none — add [[reviewers]] to .this-is-fine.local.toml)");
+        }
+    }))
+}
+
+fn cmd_reviewer_probe(root: &Path, id: Option<String>, json: bool) -> anyhow::Result<ExitCode> {
+    let cfg = load_config(root)?;
+    let reg = BackendRegistry::new();
+    let targets: Vec<_> = match id {
+        Some(id) => cfg
+            .reviewers
+            .iter()
+            .filter(|r| r.id == id)
+            .cloned()
+            .collect(),
+        None => cfg.reviewers.clone(),
+    };
+    if targets.is_empty() {
+        return Ok(emit_err("no matching reviewers to probe", json));
+    }
+    let mut results = Vec::new();
+    let mut all_ok = true;
+    for r in &targets {
+        let backend = match backend_for_provider(&reg, &r.provider) {
+            Ok(b) => b,
+            Err(e) => {
+                all_ok = false;
+                results.push(serde_json::json!({
+                    "reviewer_id": r.id,
+                    "ok": false,
+                    "message": e.to_string(),
+                }));
+                continue;
+            }
+        };
+        let cred = resolve_credential_opt(r.credential_ref.as_deref())
+            .ok()
+            .flatten();
+        match backend.probe(r, cred.as_deref()) {
+            Ok(p) => {
+                if !p.ok {
+                    all_ok = false;
+                }
+                results.push(serde_json::to_value(p)?);
+            }
+            Err(e) => {
+                all_ok = false;
+                results.push(serde_json::json!({
+                    "reviewer_id": r.id,
+                    "ok": false,
+                    "message": e.to_string(),
+                }));
+            }
+        }
+    }
+    let data = serde_json::json!({ "results": results });
+    if json {
+        println!("{}", serde_json::to_string_pretty(&JsonResponse::ok(data))?);
+    } else {
+        for r in &results {
+            println!(
+                "{}: {} — {}",
+                r.get("reviewer_id").and_then(|v| v.as_str()).unwrap_or("?"),
+                if r.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
+                    "ok"
+                } else {
+                    "FAIL"
+                },
+                r.get("message").and_then(|v| v.as_str()).unwrap_or("")
+            );
+        }
+    }
+    Ok(if all_ok {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::from(1)
+    })
+}
+
+fn cmd_reviewer_test(
+    root: &Path,
+    id: Option<String>,
+    task: Option<String>,
+    json: bool,
+) -> anyhow::Result<ExitCode> {
+    let cfg = load_config(root)?;
+    let paths = RepoPaths::for_root(root);
+    ensure_state_dirs(&paths)?;
+    // Prefer mock reviewer for offline test when id not specified.
+    let chosen = if let Some(id) = id {
+        cfg.reviewers
+            .iter()
+            .find(|r| r.id == id)
+            .cloned()
+            .with_context(|| format!("reviewer not found: {id}"))?
+    } else {
+        cfg.reviewers
+            .iter()
+            .find(|r| r.provider == "mock")
+            .cloned()
+            .or_else(|| cfg.reviewers.first().cloned())
+            .context("no reviewers configured; add a mock [[reviewers]] entry for offline test")?
+    };
+
+    // Build a one-entry pool so selection is deterministic.
+    let mut one = cfg.clone();
+    one.reviewers = vec![chosen.clone()];
+    let engine = FirebreakEngine::new(ReviewerSelector::new(one.reviewers.clone()));
+    let policy = PolicyCompiler::new().compile(
+        &one,
+        &PolicyCompileRequest {
+            task_text: task.clone(),
+            ..Default::default()
+        },
+    )?;
+    let metrics = DiffMetrics {
+        lines_added: 10,
+        files_added: 1,
+        ..Default::default()
+    };
+    let scorer = SimplicityScorer::new(policy.weights.clone(), policy.limits.clone());
+    let floor = CorrectnessFloor::all_pass();
+    let score = scorer.score(&metrics, &floor);
+    let result = engine.generate_with_backend(BackendGenerateRequest {
+        run_id: "reviewer-test".into(),
+        policy,
+        source_root: root.to_path_buf(),
+        state_dir: paths.state_dir.clone(),
+        original_metrics: metrics,
+        original_score: score,
+        original_floor: floor,
+        task_text: task.or_else(|| Some("offline reviewer test".into())),
+        acceptance_criteria: None,
+        source_or_diff: None,
+        verification_plan_summary: None,
+        max_output_bytes: 2_000_000,
+    })?;
+
+    let data = serde_json::json!({
+        "reviewer_id": chosen.id,
+        "provider": chosen.provider,
+        "success": result.outcome.success,
+        "message": result.outcome.message,
+        "candidate_path": result.patch.as_ref().map(|p| p.candidate_root.clone()),
+        "isolation_path": result.session.path,
+        "original_preserved": true,
+        "applied": false,
+    });
+    let code = if result.outcome.success {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::from(1)
+    };
+    if json {
+        println!("{}", serde_json::to_string_pretty(&JsonResponse::ok(data))?);
+    } else {
+        println!("reviewer test: {}", chosen.id);
+        println!("{}", result.outcome.message);
+        if let Some(p) = result.patch.as_ref() {
+            println!("candidate: {}", p.candidate_root.display());
+        }
+    }
+    Ok(code)
 }
 
 fn cmd_adaptation(_root: &Path, _show: bool, json: bool) -> anyhow::Result<ExitCode> {
