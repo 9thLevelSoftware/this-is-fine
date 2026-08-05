@@ -6,6 +6,7 @@
 
 use globset::{Glob, GlobSetBuilder};
 use serde::{Deserialize, Serialize};
+use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::config::ReviewerConfig;
@@ -616,6 +617,12 @@ impl FirebreakEngine {
     }
 
     /// Copy a candidate tree into an existing isolation session (for external reviewers).
+    ///
+    /// Safety:
+    /// - `candidate_root` must canonicalize and stay under the isolation session path,
+    ///   a known staging parent (session path's parent / snapshots / worktrees), or be
+    ///   an external tree that is **not** a symlink escape of those roots when nested.
+    /// - Rejects path components `.` / `..` in joined names; never follows symlinks.
     pub fn stage_candidate_tree(session: &IsolationSession, candidate_root: &Path) -> Result<()> {
         if !candidate_root.exists() {
             return Err(TifError::Isolation(format!(
@@ -623,7 +630,26 @@ impl FirebreakEngine {
                 candidate_root.display()
             )));
         }
-        copy_tree_into(candidate_root, &session.path)
+        let cand_meta = fs::symlink_metadata(candidate_root).map_err(|e| {
+            TifError::Isolation(format!(
+                "cannot stat candidate {}: {e}",
+                candidate_root.display()
+            ))
+        })?;
+        if cand_meta.file_type().is_symlink() {
+            return Err(TifError::Isolation(format!(
+                "candidate root must not be a symlink: {}",
+                candidate_root.display()
+            )));
+        }
+        let cand_canon = candidate_root.canonicalize().map_err(|e| {
+            TifError::Isolation(format!(
+                "cannot canonicalize candidate {}: {e}",
+                candidate_root.display()
+            ))
+        })?;
+        ensure_candidate_staging_allowed(&cand_canon, session)?;
+        copy_tree_into(&cand_canon, &session.path)
     }
 
     fn produce_simulated_candidate(
@@ -678,13 +704,104 @@ fn short_id(run_id: &str) -> String {
     }
 }
 
+/// Candidate may be staged from:
+/// - under the isolation session path itself
+/// - under a known parent (session parent, snapshots dir, worktrees dir, source_root)
+/// - or any other real directory that is **not** a symlink (external candidate trees)
+///
+/// What we reject: symlinked roots and paths whose lexical form contains `..`.
+fn ensure_candidate_staging_allowed(cand_canon: &Path, session: &IsolationSession) -> Result<()> {
+    for c in cand_canon.components() {
+        if matches!(c, std::path::Component::ParentDir) {
+            return Err(TifError::Isolation(
+                "candidate path must not contain `..` after canonicalize".into(),
+            ));
+        }
+    }
+    // Always allow paths under the isolation session.
+    let session_canon = session
+        .path
+        .canonicalize()
+        .unwrap_or_else(|_| session.path.clone());
+    if cand_canon.starts_with(&session_canon) {
+        return Ok(());
+    }
+    // Known staging parents: session parent, source_root, .this-is-fine/{snapshots,worktrees}.
+    let mut allowed_roots: Vec<PathBuf> = Vec::new();
+    if let Some(parent) = session.path.parent() {
+        allowed_roots.push(parent.to_path_buf());
+    }
+    allowed_roots.push(session.source_root.clone());
+    let tif = session.source_root.join(".this-is-fine");
+    allowed_roots.push(tif.join("snapshots"));
+    allowed_roots.push(tif.join("worktrees"));
+    for root in &allowed_roots {
+        let root_c = root.canonicalize().unwrap_or_else(|_| root.clone());
+        if cand_canon.starts_with(&root_c) {
+            return Ok(());
+        }
+    }
+    // External candidate trees are allowed only if they are ordinary directories
+    // (symlink roots already rejected). This keeps `tif firebreak --candidate /tmp/x` working.
+    Ok(())
+}
+
+/// Safe join: reject `.` / `..` name components and ensure result stays under `dst_root`.
+fn safe_join_under(dst_root: &Path, name: &std::ffi::OsStr) -> Result<PathBuf> {
+    let name_str = name.to_string_lossy();
+    if name_str == "." || name_str == ".." || name_str.is_empty() {
+        return Err(TifError::Isolation(format!(
+            "refusing path component `{name_str}` while copying"
+        )));
+    }
+    if name_str.contains('\0') {
+        return Err(TifError::Isolation(
+            "refusing path component containing NUL".into(),
+        ));
+    }
+    // Reject separators inside a single component (shouldn't happen from read_dir).
+    if name_str.contains('/') || name_str.contains('\\') {
+        return Err(TifError::Isolation(format!(
+            "refusing path component with separator: {name_str}"
+        )));
+    }
+    let joined = dst_root.join(name);
+    // Lexical containment: joined must start with dst_root.
+    if !joined.starts_with(dst_root) {
+        return Err(TifError::Isolation(format!(
+            "copy destination escapes root: {}",
+            joined.display()
+        )));
+    }
+    Ok(joined)
+}
+
 fn copy_tree_into(src: &Path, dst: &Path) -> Result<()> {
-    use std::fs;
-    if src.is_file() {
+    copy_tree_into_inner(src, dst, dst)
+}
+
+fn copy_tree_into_inner(src: &Path, dst: &Path, dst_root: &Path) -> Result<()> {
+    let src_meta = fs::symlink_metadata(src)?;
+    let src_ft = src_meta.file_type();
+    if src_ft.is_symlink() {
+        // Never follow or copy symlinks.
+        return Ok(());
+    }
+    if src_ft.is_file() {
         if let Some(parent) = dst.parent() {
             fs::create_dir_all(parent)?;
         }
+        // Ensure destination stays under root.
+        if !dst.starts_with(dst_root) {
+            return Err(TifError::Isolation(format!(
+                "copy destination escapes root: {}",
+                dst.display()
+            )));
+        }
         fs::copy(src, dst)?;
+        return Ok(());
+    }
+    if !src_ft.is_dir() {
         return Ok(());
     }
     fs::create_dir_all(dst)?;
@@ -699,10 +816,24 @@ fn copy_tree_into(src: &Path, dst: &Path) -> Result<()> {
             continue;
         }
         let from = entry.path();
-        let to = dst.join(&name);
-        if from.is_dir() {
-            copy_tree_into(&from, &to)?;
-        } else {
+        // Skip symlinks entirely (files or dirs).
+        let meta = match fs::symlink_metadata(&from) {
+            Ok(m) => m,
+            Err(_) => continue,
+        };
+        if meta.file_type().is_symlink() {
+            continue;
+        }
+        let to = safe_join_under(dst, &name)?;
+        if !to.starts_with(dst_root) {
+            return Err(TifError::Isolation(format!(
+                "copy destination escapes root: {}",
+                to.display()
+            )));
+        }
+        if meta.file_type().is_dir() {
+            copy_tree_into_inner(&from, &to, dst_root)?;
+        } else if meta.file_type().is_file() {
             if let Some(parent) = to.parent() {
                 fs::create_dir_all(parent)?;
             }

@@ -577,8 +577,46 @@ fn chrono_now() -> i64 {
 /// entries that are the destination tree are skipped to avoid recursion.
 /// When `src` lives under `dst` (e.g. applying a worktree back onto the repo),
 /// files are copied normally — the nested-source case is not a recursion hazard.
+///
+/// Symlink safety: never follows symlink directories; skips symlink files entirely.
+/// Path components `.` / `..` are rejected when joining names.
 fn copy_dir_selective(src: &Path, dst: &Path) -> Result<()> {
+    copy_dir_selective_inner(src, dst, dst)
+}
+
+fn safe_child_name(name: &std::ffi::OsStr) -> Result<()> {
+    let name_str = name.to_string_lossy();
+    if name_str == "." || name_str == ".." || name_str.is_empty() {
+        return Err(TifError::Isolation(format!(
+            "refusing path component `{name_str}` while copying"
+        )));
+    }
+    if name_str.contains('/') || name_str.contains('\\') || name_str.contains('\0') {
+        return Err(TifError::Isolation(format!(
+            "refusing unsafe path component: {name_str}"
+        )));
+    }
+    Ok(())
+}
+
+fn destination_stays_under(dst_root: &Path, dest: &Path) -> bool {
+    dest.starts_with(dst_root)
+}
+
+fn copy_dir_selective_inner(src: &Path, dst: &Path, dst_root: &Path) -> Result<()> {
+    // Do not follow a symlink src root into foreign trees.
+    if let Ok(meta) = fs::symlink_metadata(src) {
+        if meta.file_type().is_symlink() {
+            return Ok(());
+        }
+    }
     fs::create_dir_all(dst)?;
+    if !destination_stays_under(dst_root, dst) {
+        return Err(TifError::Isolation(format!(
+            "copy destination escapes root: {}",
+            dst.display()
+        )));
+    }
     let dst_canon = dst.canonicalize().unwrap_or_else(|_| dst.to_path_buf());
     let src_canon = src.canonicalize().unwrap_or_else(|_| src.to_path_buf());
     // Only guard against walking *into* dst when dst is nested under src.
@@ -591,23 +629,38 @@ fn copy_dir_selective(src: &Path, dst: &Path) -> Result<()> {
         if is_skipped_name(name_str.as_ref()) {
             continue;
         }
+        safe_child_name(&name)?;
         let from = entry.path();
-        if dst_nested_in_src {
+        // Symlink safety: skip symlinks (never follow into symlink dirs).
+        let meta = match fs::symlink_metadata(&from) {
+            Ok(m) => m,
+            Err(_) => continue,
+        };
+        if meta.file_type().is_symlink() {
+            continue;
+        }
+        if dst_nested_in_src && meta.file_type().is_dir() {
             let from_canon = from.canonicalize().unwrap_or_else(|_| from.clone());
             if from_canon == dst_canon || from_canon.starts_with(&dst_canon) {
                 continue;
             }
         }
         let to = dst.join(&name);
+        if !destination_stays_under(dst_root, &to) {
+            return Err(TifError::Isolation(format!(
+                "copy destination escapes root: {}",
+                to.display()
+            )));
+        }
         // Never overwrite a path with itself.
         if let (Ok(fc), Ok(tc)) = (from.canonicalize(), to.canonicalize()) {
             if fc == tc {
                 continue;
             }
         }
-        if from.is_dir() {
-            copy_dir_selective(&from, &to)?;
-        } else {
+        if meta.file_type().is_dir() {
+            copy_dir_selective_inner(&from, &to, dst_root)?;
+        } else if meta.file_type().is_file() {
             if let Some(parent) = to.parent() {
                 fs::create_dir_all(parent)?;
             }

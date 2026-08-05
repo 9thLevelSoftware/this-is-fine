@@ -32,9 +32,10 @@ pub use config::{
     apply_cli_overrides, default_local_toml, default_shared_toml, ensure_state_dirs,
     init_repository, load_config, validate_config, Config, RepoPaths, SCHEMA_VERSION,
 };
-pub use credentials::{resolve_credential, resolve_credential_opt};
+pub use credentials::{resolve_credential, resolve_credential_opt, secrets_dir};
 pub use diff::{
-    metrics_from_git, metrics_from_tree_absolute, metrics_from_tree_diff, metrics_from_unified_diff,
+    metrics_from_git, metrics_from_tree_absolute, metrics_from_tree_diff,
+    metrics_from_unified_diff, metrics_from_unified_diff_checked, MAX_UNIFIED_DIFF_BYTES,
 };
 pub use error::{Result, TifError};
 pub use fire_level::FireLevel;

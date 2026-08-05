@@ -15,7 +15,9 @@ use tif_core::config::{
     SHARED_CONFIG_NAME,
 };
 use tif_core::credentials::resolve_credential_opt;
-use tif_core::diff::{metrics_from_git, metrics_from_tree_absolute, metrics_from_unified_diff};
+use tif_core::diff::{
+    metrics_from_git, metrics_from_tree_absolute, metrics_from_unified_diff_checked,
+};
 use tif_core::fire_level::FireLevel;
 use tif_core::firebreak::{
     candidate_floor_from_verification, BackendGenerateRequest, FirebreakEngine,
@@ -238,7 +240,8 @@ fn resolve_metrics(
             std::fs::read_to_string(path)
                 .with_context(|| format!("read diff file {}", path.display()))?
         };
-        return Ok(metrics_from_unified_diff(&text));
+        return metrics_from_unified_diff_checked(&text)
+            .context("parsing unified diff (size-capped at 64 MiB)");
     }
     if from_git {
         return metrics_from_git(root).context("collecting git metrics");
@@ -691,39 +694,43 @@ fn cmd_firebreak(
             candidate_path.display()
         ));
 
-        // Re-verify against the isolated workspace path (not the original).
+        // Persist isolation session BEFORE apply so crash/dual-failure still has
+        // a recoverable session on disk (attach → record → apply → record).
+        run.isolation_session = Some(session.clone());
+        store.record_run(&run)?;
+
+        // Re-verify against the isolated workspace path only — never fall back to
+        // the original repo (that would re-verify the wrong tree).
         let inspection = RepositoryInspector::new()
             .inspect(&session.path)
-            .or_else(|_| RepositoryInspector::new().inspect(root))?;
-        let report = plan_and_run(&session.path, &cfg.verification, Some(&inspection), false)
-            .or_else(|_| {
-                // Fallback: treat empty plan carefully — never vacuous pass.
-                Ok::<_, anyhow::Error>(tif_core::verify::VerificationReport {
-                    checks: vec![tif_core::verify::CheckResult {
-                    check: tif_core::verify::VerificationCheck {
-                        id: "isolated-manual".into(),
-                        category: tif_core::verify::VerificationCategory::Custom,
-                        command: "isolated-manual".into(),
-                        source: tif_core::verify::CheckSource::ExplicitConfig,
-                        required: true,
-                        evidence: Some(
-                            "no verification commands; isolated apply requires --apply with care"
-                                .into(),
-                        ),
-                    },
-                    // Without a plan we do not claim pass; authorize_apply still gates apply.
-                    status: tif_core::verify::CheckStatus::Failed,
-                    exit_code: Some(1),
-                    duration_ms: 0,
-                    stdout_tail: String::new(),
-                    stderr_tail: "incomplete isolated verification plan".into(),
-                }],
-                    all_required_passed: false,
-                    has_unresolved: false,
-                    has_unresolved_required: false,
-                    incomplete_plan: true,
-                })
+            .with_context(|| {
+                format!(
+                    "failed to inspect isolation workspace {}",
+                    session.path.display()
+                )
             })?;
+        // Propagate plan/run errors (include them in events). Incomplete plans are
+        // already returned as Ok(report) with incomplete_plan=true — do not swallow
+        // real errors into a silent synthetic Failed report.
+        let report = match plan_and_run(&session.path, &cfg.verification, Some(&inspection), false)
+        {
+            Ok(r) => {
+                if r.incomplete_plan {
+                    run.events.push(
+                        "isolated verification plan incomplete (no required checks ran)".into(),
+                    );
+                }
+                r
+            }
+            Err(e) => {
+                let err_msg = format!("isolated verification plan_and_run failed: {e}");
+                run.events.push(err_msg.clone());
+                // Persist session + events before failing so operators can inspect.
+                run.isolation_session = Some(session.clone());
+                let _ = store.record_run(&run);
+                return Err(anyhow::anyhow!(err_msg));
+            }
+        };
 
         let candidate_floor = candidate_floor_from_verification(&report);
         // Ranking metrics must be the same *kind* on both sides.
@@ -776,7 +783,7 @@ fn cmd_firebreak(
                 ranking_original_score,
             },
         );
-        // Always persist session (including restore_pending after dual-failure).
+        // Re-persist after apply (applied / restore_pending / baseline_path).
         store.record_run(&run)?;
         fb_result?;
     } else {

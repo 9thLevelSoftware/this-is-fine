@@ -13,6 +13,12 @@ use std::process::Command;
 use crate::error::{Result, TifError};
 use crate::scoring::DiffMetrics;
 
+/// Maximum accepted unified-diff text size (64 MiB).
+pub const MAX_UNIFIED_DIFF_BYTES: usize = 64 * 1024 * 1024;
+
+/// Soft bound on path/line map entries to avoid unbounded memory growth.
+const MAX_PATH_MAP_ENTRIES: usize = 500_000;
+
 /// Collect working-tree metrics from a Git repository.
 ///
 /// Uses `git status -z` (NUL-terminated) when available, falling back to
@@ -92,25 +98,31 @@ fn status_looks_empty_ok(raw: &str) -> bool {
     raw.is_empty()
 }
 
-/// Parse `git status -z` records.
-/// Format: `XY path\0` or for renames `XY old\0new\0` (git uses two NULs with rename).
-/// Actually: `XY path\0` and for rename `R  old -> new` is not used with -z;
-/// with -z rename is `XY\0old\0new\0` in some versions, or `XY old\0new\0`.
+/// Parse `git status -z` (porcelain v1) records.
+///
+/// Wire format (verified against git):
+/// - Normal: `XY PATH\0` where XY is two status bytes followed by a single space,
+///   then the path until NUL.
+/// - Rename/copy: `XY NEW\0OLD\0` — **first path is the destination/new path**,
+///   second is the source/old path. We keep the new path for `changed_paths`.
+///
+/// Example rename bytes: `R  new.txt\0old.txt\0`.
 fn parse_status_z(raw: &str) -> Vec<(String, String)> {
     let bytes = raw.as_bytes();
     let mut out = Vec::new();
     let mut i = 0;
     while i < bytes.len() {
-        if i + 3 > bytes.len() {
+        // Need at least XY.
+        if i + 2 > bytes.len() {
             break;
         }
-        // XY + space
         let xy = String::from_utf8_lossy(&bytes[i..i + 2]).into_owned();
         i += 2;
+        // Porcelain v1 -z: single space after XY (not a second NUL).
         if i < bytes.len() && bytes[i] == b' ' {
             i += 1;
         }
-        // path until NUL
+        // path1 until NUL
         let start = i;
         while i < bytes.len() && bytes[i] != 0 {
             i += 1;
@@ -118,27 +130,24 @@ fn parse_status_z(raw: &str) -> Vec<(String, String)> {
         let path1 = String::from_utf8_lossy(&bytes[start..i]).replace('\\', "/");
         if i < bytes.len() && bytes[i] == 0 {
             i += 1;
+        } else if i >= bytes.len() && path1.is_empty() {
+            break;
         }
-        // Rename/copy: second path follows immediately.
-        let path = if matches!(xy.chars().next(), Some('R' | 'C')) && i < bytes.len() {
-            let start2 = i;
+        // Rename/copy: second path (old) follows; keep NEW (path1).
+        let is_rename_or_copy = xy.chars().next().is_some_and(|c| c == 'R' || c == 'C')
+            || xy.chars().nth(1).is_some_and(|c| c == 'R' || c == 'C');
+        if is_rename_or_copy && i < bytes.len() {
+            // Consume old path until NUL (required field for R/C entries).
             while i < bytes.len() && bytes[i] != 0 {
                 i += 1;
             }
-            let path2 = String::from_utf8_lossy(&bytes[start2..i]).replace('\\', "/");
             if i < bytes.len() && bytes[i] == 0 {
                 i += 1;
             }
-            if path2.is_empty() {
-                path1
-            } else {
-                path2
-            }
-        } else {
-            path1
-        };
-        if !path.is_empty() {
-            out.push((xy, path));
+        }
+        // Destination/new path for renames; sole path otherwise.
+        if !path1.is_empty() {
+            out.push((xy, path1));
         }
     }
     out
@@ -302,6 +311,11 @@ fn walk_tree(root: &Path, current: &Path, out: &mut BTreeMap<String, PathBuf>) -
     if !current.exists() {
         return Ok(());
     }
+    // Symlink safety: never follow symlink directories; skip symlink files.
+    let cur_meta = fs::symlink_metadata(current)?;
+    if cur_meta.file_type().is_symlink() {
+        return Ok(());
+    }
     for entry in fs::read_dir(current)? {
         let entry = entry?;
         let name = entry.file_name();
@@ -312,10 +326,35 @@ fn walk_tree(root: &Path, current: &Path, out: &mut BTreeMap<String, PathBuf>) -
         ) {
             continue;
         }
+        // Reject `.` / `..` name components (should not appear from read_dir, but belt+suspenders).
+        if name_str == "." || name_str == ".." {
+            continue;
+        }
         let path = entry.path();
-        if path.is_dir() {
+        let meta = match fs::symlink_metadata(&path) {
+            Ok(m) => m,
+            Err(_) => continue,
+        };
+        let ft = meta.file_type();
+        if ft.is_symlink() {
+            // Never follow or count symlinks.
+            continue;
+        }
+        if ft.is_dir() {
+            if out.len() >= MAX_PATH_MAP_ENTRIES {
+                return Err(TifError::Other(format!(
+                    "tree walk exceeded {MAX_PATH_MAP_ENTRIES} path entries under {}",
+                    root.display()
+                )));
+            }
             walk_tree(root, &path, out)?;
-        } else if path.is_file() {
+        } else if ft.is_file() {
+            if out.len() >= MAX_PATH_MAP_ENTRIES {
+                return Err(TifError::Other(format!(
+                    "tree walk exceeded {MAX_PATH_MAP_ENTRIES} path entries under {}",
+                    root.display()
+                )));
+            }
             let rel = path
                 .strip_prefix(root)
                 .unwrap_or(&path)
@@ -329,8 +368,9 @@ fn walk_tree(root: &Path, current: &Path, out: &mut BTreeMap<String, PathBuf>) -
 
 /// Rough line add/del counts without a full diff algorithm.
 fn line_diff_counts(old: &str, new: &str) -> (u32, u32) {
-    let old_lines: Vec<&str> = old.lines().collect();
-    let new_lines: Vec<&str> = new.lines().collect();
+    // Bound map growth for pathological inputs.
+    let old_lines: Vec<&str> = old.lines().take(MAX_PATH_MAP_ENTRIES).collect();
+    let new_lines: Vec<&str> = new.lines().take(MAX_PATH_MAP_ENTRIES).collect();
     // Multiset-ish: count lines only in new as adds, only in old as dels.
     let mut old_counts: BTreeMap<&str, u32> = BTreeMap::new();
     for l in &old_lines {
@@ -366,7 +406,22 @@ fn line_diff_counts(old: &str, new: &str) -> (u32, u32) {
 }
 
 /// Parse a unified diff text into rough `DiffMetrics`.
+///
+/// Returns an error-shaped empty metrics only via panic-free path; oversized
+/// input is rejected by [`metrics_from_unified_diff_checked`].
 pub fn metrics_from_unified_diff(diff: &str) -> DiffMetrics {
+    metrics_from_unified_diff_checked(diff).unwrap_or_default()
+}
+
+/// Parse a unified diff, rejecting inputs larger than [`MAX_UNIFIED_DIFF_BYTES`].
+pub fn metrics_from_unified_diff_checked(diff: &str) -> Result<DiffMetrics> {
+    if diff.len() > MAX_UNIFIED_DIFF_BYTES {
+        return Err(TifError::Other(format!(
+            "unified diff exceeds size limit ({} bytes > {} bytes / 64 MiB)",
+            diff.len(),
+            MAX_UNIFIED_DIFF_BYTES
+        )));
+    }
     let mut metrics = DiffMetrics::default();
     let mut current_path: Option<String> = None;
     let mut file_is_new = false;
@@ -436,7 +491,7 @@ pub fn metrics_from_unified_diff(diff: &str) -> DiffMetrics {
         metrics.files_changed = 1;
     }
 
-    metrics
+    Ok(metrics)
 }
 
 fn classify_file(
@@ -673,6 +728,64 @@ Binary files a/img.png and b/img.png differ
         let entries = parse_status_porcelain_v1(status);
         assert_eq!(entries.len(), 1);
         assert!(entries[0].1.contains("new name.txt"));
+    }
+
+    #[test]
+    fn parse_status_z_basic_and_untracked() {
+        // XY + space + path + NUL
+        let raw = " M src/lib.rs\0?? new.txt\0";
+        let entries = parse_status_z(raw);
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].0, " M");
+        assert_eq!(entries[0].1, "src/lib.rs");
+        assert_eq!(entries[1].0, "??");
+        assert_eq!(entries[1].1, "new.txt");
+    }
+
+    #[test]
+    fn parse_status_z_rename_keeps_new_path() {
+        // Verified git wire format: `R  new.txt\0old.txt\0` (first path is destination).
+        let raw = "R  new.txt\0old.txt\0";
+        let entries = parse_status_z(raw);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].0, "R ");
+        assert_eq!(
+            entries[0].1, "new.txt",
+            "must keep NEW/destination path, not old"
+        );
+    }
+
+    #[test]
+    fn parse_status_z_copy_keeps_new_path() {
+        let raw = "C  dest/file.rs\0src/file.rs\0";
+        let entries = parse_status_z(raw);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].1, "dest/file.rs");
+    }
+
+    #[test]
+    fn parse_status_z_mixed_rename_and_modify() {
+        let raw = "R  b.txt\0a.txt\0 M c.txt\0";
+        let entries = parse_status_z(raw);
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].1, "b.txt");
+        assert_eq!(entries[1].0, " M");
+        assert_eq!(entries[1].1, "c.txt");
+    }
+
+    #[test]
+    fn unified_diff_rejects_oversized_input() {
+        // Allocate just over the limit with a tiny header-ish payload.
+        let mut huge = String::with_capacity(MAX_UNIFIED_DIFF_BYTES + 8);
+        huge.push_str("diff --git a/x b/x\n");
+        while huge.len() <= MAX_UNIFIED_DIFF_BYTES {
+            huge.push_str("+line\n");
+        }
+        let err = metrics_from_unified_diff_checked(&huge).unwrap_err();
+        assert!(
+            err.to_string().contains("size limit") || err.to_string().contains("64 MiB"),
+            "{err}"
+        );
     }
 
     #[test]

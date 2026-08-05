@@ -167,28 +167,46 @@ fn copy_dir_filtered(
     root: &std::path::Path,
 ) -> Result<()> {
     use std::fs;
+    use std::path::Component;
     fs::create_dir_all(dst)?;
+    // follow_links(false) is the WalkDir default — never follow symlink dirs.
     for entry in walkdir::WalkDir::new(src)
+        .follow_links(false)
         .into_iter()
         .filter_map(|e| e.ok())
-        .filter(|e| e.file_type().is_file())
     {
+        // Skip symlinks entirely (file or dir).
+        if entry.path_is_symlink() || entry.file_type().is_symlink() {
+            continue;
+        }
+        if !entry.file_type().is_file() {
+            continue;
+        }
         let rel = entry
             .path()
             .strip_prefix(root)
             .map_err(|e| TifError::Other(format!("strip prefix: {e}")))?;
-        // Skip heavy / local state.
+        // Reject `.` / `..` components and skip heavy / local state.
         if rel.components().any(|c| {
-            let s = c.as_os_str();
-            s == ".git"
-                || s == "target"
-                || s == "node_modules"
-                || s == ".this-is-fine"
-                || s == ".tif-candidate"
+            matches!(c, Component::ParentDir | Component::CurDir) || {
+                let s = c.as_os_str();
+                s == ".git"
+                    || s == "target"
+                    || s == "node_modules"
+                    || s == ".this-is-fine"
+                    || s == ".tif-candidate"
+            }
         }) {
             continue;
         }
         let target = dst.join(rel);
+        // Lexical containment under dst.
+        if !target.starts_with(dst) {
+            return Err(TifError::Other(format!(
+                "copy destination escapes root: {}",
+                target.display()
+            )));
+        }
         if let Some(parent) = target.parent() {
             fs::create_dir_all(parent)?;
         }
@@ -516,8 +534,10 @@ pub mod anthropic {
 #[cfg(feature = "provider-process")]
 pub mod process {
     use super::*;
+    use std::io::Read;
     use std::process::{Command, Stdio};
-    use std::time::Instant;
+    use std::thread;
+    use std::time::{Duration, Instant};
 
     /// Local process backend: runs argv with isolation path and request JSON.
     #[derive(Debug)]
@@ -561,24 +581,22 @@ pub mod process {
                 .collect();
             let program = args.remove(0);
 
-            let mut cmd = Command::new(&program);
-            cmd.args(&args)
-                .current_dir(&task.isolation_root)
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped());
-            // Do not inject secrets into env by default; process can read credential_ref itself.
-            let output = cmd
-                .output()
-                .map_err(|e| TifError::Other(format!("failed to spawn process reviewer: {e}")))?;
-            if !output.status.success() {
-                let stderr = String::from_utf8_lossy(&output.stderr);
+            let timeout = Duration::from_secs(task.reviewer.timeout_secs.max(1));
+            let (stdout, stderr, status_code, timed_out) =
+                run_process_with_timeout(&program, &args, &task.isolation_root, timeout)?;
+
+            if timed_out {
                 return Err(TifError::Other(format!(
-                    "process reviewer exited {:?}: {stderr}",
-                    output.status.code()
+                    "process reviewer timed out after {}s: {stderr}",
+                    timeout.as_secs()
+                )));
+            }
+            if status_code != Some(0) {
+                return Err(TifError::Other(format!(
+                    "process reviewer exited {status_code:?}: {stderr}"
                 )));
             }
 
-            let stdout = String::from_utf8_lossy(&output.stdout);
             let candidate = ensure_candidate_seeded(&task.isolation_root)?;
             // Prefer stdout JSON; else look for TIF_PROCESS_OUTPUT.json in isolation.
             let tree = if stdout.trim().starts_with('{') {
@@ -650,6 +668,149 @@ pub mod process {
                 },
                 latency_ms: start.elapsed().as_millis() as u64,
             })
+        }
+    }
+
+    /// Spawn process reviewer with env scrub, pipe drain, and timeout (kill tree).
+    fn run_process_with_timeout(
+        program: &str,
+        args: &[String],
+        cwd: &std::path::Path,
+        timeout: Duration,
+    ) -> Result<(String, String, Option<i32>, bool)> {
+        let mut cmd = Command::new(program);
+        cmd.args(args)
+            .current_dir(cwd)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        // Scrub environment: never pass API keys / secrets. Re-add minimal allowlist.
+        apply_minimal_env(&mut cmd);
+        // New process group on Unix so timeout can kill grandchildren.
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            cmd.process_group(0);
+        }
+
+        let mut child = cmd
+            .spawn()
+            .map_err(|e| TifError::Other(format!("failed to spawn process reviewer: {e}")))?;
+
+        let stdout_pipe = child.stdout.take();
+        let stderr_pipe = child.stderr.take();
+        let stdout_handle = thread::spawn(move || {
+            let mut buf = Vec::new();
+            if let Some(mut out) = stdout_pipe {
+                let _ = out.read_to_end(&mut buf);
+            }
+            buf
+        });
+        let stderr_handle = thread::spawn(move || {
+            let mut buf = Vec::new();
+            if let Some(mut err) = stderr_pipe {
+                let _ = err.read_to_end(&mut buf);
+            }
+            buf
+        });
+
+        let start = Instant::now();
+        let timed_out = loop {
+            match child.try_wait() {
+                Ok(Some(_)) => break false,
+                Ok(None) => {
+                    if start.elapsed() >= timeout {
+                        kill_child_tree(&child);
+                        let _ = child.kill();
+                        break true;
+                    }
+                    thread::sleep(Duration::from_millis(25));
+                }
+                Err(e) => {
+                    return Err(TifError::Other(format!(
+                        "process reviewer wait failed: {e}"
+                    )));
+                }
+            }
+        };
+
+        let status = child
+            .wait()
+            .map_err(|e| TifError::Other(format!("process reviewer wait failed: {e}")))?;
+        let stdout =
+            String::from_utf8_lossy(&stdout_handle.join().unwrap_or_default()).into_owned();
+        let mut stderr =
+            String::from_utf8_lossy(&stderr_handle.join().unwrap_or_default()).into_owned();
+        if timed_out {
+            let msg = format!("process reviewer timed out after {}s", timeout.as_secs());
+            if stderr.is_empty() {
+                stderr = msg;
+            } else {
+                stderr = format!("{msg}\n{stderr}");
+            }
+        }
+        Ok((stdout, stderr, status.code(), timed_out))
+    }
+
+    /// Clear env and re-add a minimal allowlist (no API keys).
+    fn apply_minimal_env(cmd: &mut Command) {
+        cmd.env_clear();
+        const ALLOW: &[&str] = &[
+            "PATH",
+            "HOME",
+            "USERPROFILE",
+            "HOMEDRIVE",
+            "HOMEPATH",
+            "SystemRoot",
+            "SYSTEMROOT",
+            "WINDIR",
+            "COMSPEC",
+            "PATHEXT",
+            "LANG",
+            "TMP",
+            "TEMP",
+            "TMPDIR",
+            "USER",
+            "USERNAME",
+            "LOGNAME",
+        ];
+        for key in ALLOW {
+            if let Ok(v) = std::env::var(key) {
+                cmd.env(key, v);
+            }
+        }
+        // Pass through locale vars (LC_*), never secrets.
+        for (k, v) in std::env::vars() {
+            if k.starts_with("LC_") {
+                cmd.env(k, v);
+            }
+        }
+    }
+
+    fn kill_child_tree(child: &std::process::Child) {
+        let id = child.id();
+        if cfg!(target_os = "windows") {
+            let _ = Command::new("taskkill")
+                .args(["/PID", &id.to_string(), "/T", "/F"])
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status();
+        } else {
+            let pgid = format!("-{id}");
+            let _ = Command::new("kill")
+                .args(["-TERM", &pgid])
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status();
+            let _ = Command::new("kill")
+                .args(["-KILL", &pgid])
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status();
+            let _ = Command::new("kill")
+                .args(["-KILL", &id.to_string()])
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status();
         }
     }
 
