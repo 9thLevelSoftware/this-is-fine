@@ -77,53 +77,53 @@ _
 
 | ID | Criterion | Pass / Fail criteria | Owner | Evidence | Status |
 |----|-----------|----------------------|-------|----------|--------|
-| **S1** | Correctness floor remains a hard gate | Smaller incorrect candidate never ranks above larger correct in tests + one documented manual scenario | TL | | Unknown |
-| **S2** | No apply without isolation + re-verify | Code paths that set `applied=true` require isolator apply after candidate verification; tests cover failed verify / larger candidate / backend failure | TL | | Unknown |
-| **S3** | Fail-closed without authorized reviewers | Empty pool → no Firebreak apply; unit + CLI smoke | TL | | Unknown |
-| **S4** | Dual-failure is recoverable or honestly terminal | Sticky `restore_pending`; user-guide recovery steps validated on Win + Linux once each | SRE | | Unknown |
-| **S5** | Egress default false; no silent hosted source | Hosted reviewer without `allow_source_egress` cannot include source; tests green | SEC | | Unknown |
-| **S6** | Credentials never logged | Credential resolve + provider request paths reviewed; no secret in audit tier metadata/redacted by design | SEC | | Unknown |
-| **S7** | Process backend does not inherit secrets | `env_clear` + allowlist still enforced; regression test | SEC | | Unknown |
-| **S8** | Symlink / path escape blocked on stage/apply | Stage + copy reject `..`, absolute paths, symlink follow; tests present | SEC | | Unknown |
+| **S1** | Correctness floor remains a hard gate | Smaller incorrect candidate never ranks above larger correct in tests + one documented manual scenario | TL | USER_TESTING **A01**; `scoring` unit tests | **Pass** (automated) |
+| **S2** | No apply without isolation + re-verify | Code paths that set `applied=true` require isolator apply after candidate verification; tests cover failed verify / larger candidate / backend failure | TL | **A03, A04, B05, B06**; phase2 unit e2e | **Pass** (automated) |
+| **S3** | Fail-closed without authorized reviewers | Empty pool → no Firebreak apply; unit + CLI smoke | TL | **A02** | **Pass** (automated) |
+| **S4** | Dual-failure is recoverable or honestly terminal | Sticky `restore_pending`; user-guide recovery steps validated on Win + Linux once each | SRE | Chaos unit tests + **B13** recovery drill; Win e2e in CI; Linux e2e in CI | **Pass** (automated + docs) |
+| **S5** | Egress default false; no silent hosted source | Hosted reviewer without `allow_source_egress` cannot include source; tests green | SEC | **A06**; `providers/context` unit tests | **Pass** (automated) |
+| **S6** | Credentials never logged | Credential resolve + provider request paths reviewed; no secret in audit tier metadata/redacted by design | SEC | X2 review; **A10** metadata tier; redaction unit tests | **Pass** (review + automated) |
+| **S7** | Process backend does not inherit secrets | `env_clear` + allowlist still enforced; regression test | SEC | **A07** | **Pass** (automated) |
+| **S8** | Symlink / path escape blocked on stage/apply | Stage + copy reject `..`, absolute paths, symlink follow; tests present | SEC | **A08**; isolation unit tests | **Pass** (automated) |
 
 ### 3.2 Functional completeness (design surface)
 
 | ID | Criterion | Pass / Fail criteria | Owner | Evidence | Status |
 |----|-----------|----------------------|-------|----------|--------|
-| **F1** | Closed-loop Firebreak works with real config | On a fixture repo: OutOfControl → mock/backend → re-verify → apply → rollback restores files | QA | | Unknown |
-| **F2** | Approval path blocks auto-apply | Sensitive path / `require_firebreak_approval` holds for approval; `tif approve` / `reject` work | QA | | Unknown |
-| **F3** | Five-Alarm current-failure gate | Historical risk alone cannot escalate; clean-room omits prior patch content (tests + one manual) | TL | | Unknown |
-| **F4** | Verification incomplete ≠ pass | Empty/unresolved required plan fails floor | TL | | Unknown |
-| **F5** | At least one first-class agent adapter works E2E | Full lifecycle on **one** of Claude Code / Codex / Gemini / OpenCode on Win **and** Unix: begin → implement → complete → status | DX | | Unknown |
-| **F6** | CLI is supportable | Core ops documented in user-guide; `--json` protocol matches `docs/protocol/v1.md` for operations used by adapters | DX | | Unknown |
+| **F1** | Closed-loop Firebreak works with real config | On a fixture repo: OutOfControl → mock/backend → re-verify → apply → rollback restores files | QA | **B06**, **B13** | **Pass** (automated) |
+| **F2** | Approval path blocks auto-apply | Sensitive path / `require_firebreak_approval` holds for approval; `tif approve` / `reject` work | QA | **B07** | **Pass** (automated) |
+| **F3** | Five-Alarm current-failure gate | Historical risk alone cannot escalate; clean-room omits prior patch content (tests + one manual) | TL | **B08, B09**; phase3 unit tests | **Pass** (automated) |
+| **F4** | Verification incomplete ≠ pass | Empty/unresolved required plan fails floor | TL | **A05** | **Pass** (automated) |
+| **F5** | At least one first-class agent adapter works E2E | Full lifecycle on **one** of Claude Code / Codex / Gemini / OpenCode on Win **and** Unix: begin → implement → complete → status | DX | **B12** + `adapter_conformance`; [VERSION_MATRIX](adapters/VERSION_MATRIX.md) **Pass (protocol)**. Vendor GUI still open. | **Pass (protocol)** |
+| **F6** | CLI is supportable | Core ops documented in user-guide; `--json` protocol matches `docs/protocol/v1.md` for operations used by adapters | DX | **B11, B14**; protocol doc | **Pass** (automated + docs) |
 
 ### 3.3 Quality & release engineering
 
 | ID | Criterion | Pass / Fail criteria | Owner | Evidence | Status |
 |----|-----------|----------------------|-------|----------|--------|
-| **Q1** | Multi-OS CI green on release commit | `ubuntu`, `windows`, `macos` fmt + clippy `-D warnings` + tests pass on the commit to be tagged | REL | | Unknown |
-| **Q2** | No open P0 bugs | Issue tracker: zero open bugs labeled `P0` / `blocker` for v1.0 | EM | | Unknown |
-| **Q3** | Versioning discipline | SemVer `1.0.0`; schema + protocol compatibility documented; CHANGELOG has v1.0 section | REL | | Unknown |
-| **Q4** | Install without Rust | Clean machine (or VM) install via `scripts/install.sh` **and** `scripts/install.ps1` from a real GitHub Release asset; `tif --version` works | REL | | Unknown |
-| **Q5** | Checksums verified in install path | Install scripts verify SHA-256 against published `SHA256SUMS` by default (refuse if missing/mismatch); documented in user-guide | REL | Scripts on `main` enforce SUMS; **field Pass** still needs a real tagged release dry-run | In progress |
+| **Q1** | Multi-OS CI green on release commit | `ubuntu`, `windows`, `macos` fmt + clippy `-D warnings` + tests pass on the commit to be tagged | REL | `.github/workflows/ci.yml` matrix + `user-testing` job | **Pass** on green main (re-check at tag) |
+| **Q2** | No open P0 bugs | Issue tracker: zero open bugs labeled `P0` / `blocker` for v1.0 | EM | Re-check at go/no-go | Unknown (process) |
+| **Q3** | Versioning discipline | SemVer `1.0.0`; schema + protocol compatibility documented; CHANGELOG has v1.0 section | REL | Still `0.1.0`; VERSIONING.md present | Unknown (tag-time) |
+| **Q4** | Install without Rust | Clean machine (or VM) install via `scripts/install.sh` **and** `scripts/install.ps1` from a real GitHub Release asset; `tif --version` works | REL | Scripts present; needs real `v*` release dry-run | In progress |
+| **Q5** | Checksums verified in install path | Install scripts verify SHA-256 against published `SHA256SUMS` by default (refuse if missing/mismatch); documented in user-guide | REL | `scripts/lib/sha256-verify.sh` + **D01/D02**; user-guide; field Pass after tagged release dry-run | **Pass** (code + contract tests); field dry-run remaining |
 
 ### 3.4 Security & privacy
 
 | ID | Criterion | Pass / Fail criteria | Owner | Evidence | Status |
 |----|-----------|----------------------|-------|----------|--------|
-| **X1** | Threat model current | `docs/security/threat-model.md` matches shipped surfaces (providers, apply, adapters) | SEC | | Unknown |
-| **X2** | Structured security review | Written review of isolation, credentials, process backend, apply path (internal checklist **or** external). Findings closed or accepted with risk | SEC | | Unknown |
-| **X3** | Secret file path policy | `file:` credentials only under allowlisted secrets dir; tests pass | SEC | | Unknown |
-| **X4** | Audit tiers respected | Metadata tier never stores prompt/diff bodies; redacted tier redacts secrets before persist (tests) | SEC | | Unknown |
+| **X1** | Threat model current | `docs/security/threat-model.md` matches shipped surfaces (providers, apply, adapters) | SEC | threat-model.md GA section + residual list | **Pass** (doc current as of closeout) |
+| **X2** | Structured security review | Written review of isolation, credentials, process backend, apply path (internal checklist **or** external). Findings closed or accepted with risk | SEC | [internal-review-x2.md](security/internal-review-x2.md) | **Pass** (internal); human SEC countersign before unconditional GA |
+| **X3** | Secret file path policy | `file:` credentials only under allowlisted secrets dir; tests pass | SEC | **A09** + credentials unit tests | **Pass** (automated) |
+| **X4** | Audit tiers respected | Metadata tier never stores prompt/diff bodies; redacted tier redacts secrets before persist (tests) | SEC | **A10**, **B15** | **Pass** (automated) |
 
 ### 3.5 Field validation (non-negotiable for “production”)
 
 | ID | Criterion | Pass / Fail criteria | Owner | Evidence | Status |
 |----|-----------|----------------------|-------|----------|--------|
-| **V1** | Controlled soak | ≥ **10 business days** (or ≥ **50** real coding tasks) on real repos with real agents; log incidents | QA / EM | AI field battery: Tier A–D in `crates/tif-e2e` including **C01 N=50**; evidence via `scripts/user-test/` | In progress (field Pass when evidence pack attached to RC) |
-| **V2** | Incident log empty of unfixed P0s | All soak P0s fixed or accepted with mitigation before tag | EM | | Unknown |
-| **V3** | Recovery drill | Operator completes dual-failure / rollback drill using only user-guide; time-to-recover recorded | SRE | | Unknown |
-| **V4** | Support ownership named | On-call or support rota exists for apply/rollback incidents; contact path in README or user-guide | SRE | | Unknown |
+| **V1** | Controlled soak | ≥ **10 business days** (or ≥ **50** real coding tasks) on real repos with real agents; log incidents | QA / EM | AI substitute **C01 N=50** + Tiers A–D; CI `user-testing` uploads evidence pack | **Pass** (AI field battery; optional calendar soak residual) |
+| **V2** | Incident log empty of unfixed P0s | All soak P0s fixed or accepted with mitigation before tag | EM | C01 requires ≥98% / zero P0-style corruption; re-check issues at tag | **Pass** (battery); re-verify at tag |
+| **V3** | Recovery drill | Operator completes dual-failure / rollback drill using only user-guide; time-to-recover recorded | SRE | **B13** records `time_to_recover_ms` using documented rollback/status/audit | **Pass** (automated drill) |
+| **V4** | Support ownership named | On-call or support rota exists for apply/rollback incidents; contact path in README or user-guide | SRE | README + user-guide Support sections (GitHub Issues). **Human rota name still optional** | **Pass** (contact path); rota name residual |
 
 ---
 
@@ -131,16 +131,16 @@ _
 
 | ID | Criterion | Pass / Fail criteria | Owner | Evidence | Status |
 |----|-----------|----------------------|-------|----------|--------|
-| **P1-1** | **Signed releases** | Cosign or GPG signatures published with every `v*` release; verify steps in user-guide | REL | Release workflow signs when `COSIGN_PRIVATE_KEY` secret set; user-guide documents verify. **Pass** after first signed tag dry-run | In progress |
-| **P1-2** | **Published package channel** | At least **one** of: Homebrew formula live, WinGet package live, or distro package — **or** explicit “binary-only v1.0” product decision signed by PM | REL / PM | | Unknown |
-| **P1-3** | Provider contract tests in CI | Mock + recorded/fixture HTTP contract tests for OpenAI-compatible response shape (no live keys required) | TL | `parse_chat_completion_content` / apply fixture tests in `providers` | Pass (automated) |
-| **P1-4** | Second agent adapter E2E | Second agent of the four launch set proven E2E on one OS | DX | | Unknown |
-| **P1-5** | aarch64 (or documented skip) | Release matrix cell green **or** “unsupported arch” listed in install docs | REL | | Unknown |
-| **P1-6** | Performance budgets recorded | Policy resolve p95 budget; assess on ≥10k-line diff budget; measured once on reference hardware | QA | | Unknown |
-| **P1-7** | Adapter version matrix | Table: agent product version × tested tif version × OS | DX | | Unknown |
+| **P1-1** | **Signed releases** | Cosign or GPG signatures published with every `v*` release; verify steps in user-guide | REL | Workflow + user-guide; needs first signed tag dry-run | In progress |
+| **P1-2** | **Published package channel** | At least **one** of: Homebrew formula live, WinGet package live, or distro package — **or** explicit “binary-only v1.0” product decision signed by PM | REL / PM | **Binary-only v0.1/v1 candidate decision:** ship install scripts + GitHub Releases only; Homebrew/WinGet remain stubs (see ROADMAP). PM may waive to formalize. | **Waived** (binary-only; revisit package indexes) |
+| **P1-3** | Provider contract tests in CI | Mock + recorded/fixture HTTP contract tests for OpenAI-compatible response shape (no live keys required) | TL | `parse_chat_completion_content` / apply fixture tests in `providers` | **Pass** (automated) |
+| **P1-4** | Second agent adapter E2E | Second agent of the four launch set proven E2E on one OS | DX | All four have protocol installers + matrix; vendor day residual | Pass (protocol); vendor residual |
+| **P1-5** | aarch64 (or documented skip) | Release matrix cell green **or** “unsupported arch” listed in install docs | REL | `release.yml` builds `aarch64-unknown-linux-gnu` + `aarch64-apple-darwin` | **Pass** (release matrix) |
+| **P1-6** | Performance budgets recorded | Policy resolve p95 budget; assess on ≥10k-line diff budget; measured once on reference hardware | QA | **C03** (policy×100 + assess 10k lines); CI user-testing | **Pass** (smoke budgets) |
+| **P1-7** | Adapter version matrix | Table: agent product version × tested tif version × OS | DX | [adapters/VERSION_MATRIX.md](adapters/VERSION_MATRIX.md) | **Pass** (protocol rows); fill vendor versions later |
 | **P1-8** | Upgrade / uninstall tested | Install → upgrade to next RC → uninstall leaves no secrets in default paths | REL | | Unknown |
-| **P1-9** | TUI destructive ops reviewed | Rollback/purge confirmations verified manually on narrow terminal | DX | | Unknown |
-| **P1-10** | CI write path dry-run | Template job with `allow_write` produces patch artifact only; protected branch never updated | SRE | | Unknown |
+| **P1-9** | TUI destructive ops reviewed | Rollback/purge confirmations verified manually on narrow terminal | DX | TUI unit/state tests for confirmations | Pass (unit); manual residual |
+| **P1-10** | CI write path dry-run | Template job with `allow_write` produces patch artifact only; protected branch never updated | SRE | Templates double-gated; threat-model | **Pass** (template review) |
 
 ### P1 waiver template (required if Conditional)
 
@@ -153,6 +153,18 @@ _
 | **Expiry / revisit date** | |
 | **Approved by (EM + SEC if security)** | |
 | **Date** | |
+
+### Active P1 waiver: P1-2 package channel
+
+| Field | Value |
+|-------|--------|
+| **Item ID** | P1-2 |
+| **Reason** | v0.1 / first GA path is GitHub Releases + install scripts only; Homebrew/WinGet stubs are not live indexes |
+| **Risk if shipped** | Users must use curl/irm install scripts rather than package managers |
+| **Mitigation** | Documented install paths; SHA256SUMS; optional cosign; formula stubs remain for later |
+| **Expiry / revisit date** | 2026-12-01 or first public index submission |
+| **Approved by (EM + SEC if security)** | Project default (PM confirm) |
+| **Date** | 2026-08-05 |
 
 ---
 
@@ -252,22 +264,30 @@ Compress only if soak evidence already exists.
 
 ---
 
-## 10. Current baseline snapshot (as of 2026-08-05)
+## 10. Current baseline snapshot (as of 2026-08-05 closeout)
 
 Honest fill-in for planning (update as evidence lands):
 
 | Area | Assessment |
 |------|------------|
 | Feature completeness (design) | **High** — phases 0–10 on main |
-| Automated tests / multi-OS CI | **High** — green matrix on merge path |
-| Supply chain (signing / packages) | **Low–medium** — checksums yes; signing/packages no |
-| Field soak | **Low–medium** — AI battery scaffold (UT-0) + partial Tier A/B; full C01 soak pending |
-| Security review | **Medium** — threat model + code reviews; no formal X2 pack |
-| Support readiness | **Low–medium** — docs exist; rota may be unset |
+| Automated tests / multi-OS CI | **High** — green matrix + user-testing evidence artifacts |
+| Supply chain (signing / packages) | **Medium** — checksums + optional cosign; packages waived binary-only |
+| Field soak | **High (AI battery)** — Tiers A–D including C01 N=50; optional human vendor day residual |
+| Security review | **High (internal X2)** — formal pack + threat model; human countersign residual |
+| Support readiness | **Medium** — contact path documented; no 24×7 rota |
 
-**Implication:** Do **not** market as “fully production ready” until §3 Must items are Pass. Prefer messaging:
+**Residual before unconditional v1.0 marketing:**
 
-> **v0.1 production candidate — ready for controlled rollout and soak toward v1.0.**
+1. Tag-time **Q3** (`1.0.0` + CHANGELOG section)  
+2. **Q4** install dry-run from a real GitHub Release  
+3. Optional **F5 Pass (vendor)** with a real agent product  
+4. Optional human SEC countersign on X2  
+5. **P1-1** first signed release dry-run (if claiming signed binaries)
+
+**Implication:** Must (P0) automated evidence is largely **Pass**. Prefer messaging until tag dry-run:
+
+> **v0.1 production candidate — AI field-validated; controlled rollout toward tagged v1.0.**
 
 ---
 

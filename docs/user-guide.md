@@ -89,6 +89,14 @@ tif rollback <run_id>
 
 In the TUI (`tif tui`): open **Firebreak**, select a run, `a` approve / `x` reject / `R` rollback (with confirmation).
 
+## Support contact
+
+- **Primary:** GitHub Issues — https://github.com/9thLevelSoftware/this-is-fine/issues (label `incident` / `P0` for blockers)  
+- **Runbook:** this document (recovery sections below)  
+- **Security reports:** prefer private disclosure if available; otherwise open a security-labeled issue without secrets  
+
+v0.1 is best-effort community support, not a committed SLA.
+
 ## Recovery runbook
 
 ### 1. Containment suspended
