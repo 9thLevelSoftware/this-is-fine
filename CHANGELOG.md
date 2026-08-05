@@ -9,6 +9,10 @@ Versioning: see [docs/VERSIONING.md](docs/VERSIONING.md).
 
 ### Added
 
+- **Residual readiness rails**
+  - `scripts/uninstall.sh` / `uninstall.ps1` (optional secrets purge)
+  - E2E **P18** install→upgrade→uninstall; **F5-smoke** adapter installer smoke
+  - [RELEASE_DRY_RUN.md](docs/RELEASE_DRY_RUN.md) for Q4 field Pass
 - **AI field-validation battery (USER_TESTING)**
   - `crates/tif-e2e` Tiers A–D (safety, journeys, C01 N=50 soak, local SUMS via `scripts/lib/sha256-verify.sh`)
   - `scripts/user-test/run-all` + CI evidence pack artifacts

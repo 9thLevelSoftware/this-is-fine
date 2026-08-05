@@ -94,7 +94,7 @@ _
 | **F2** | Approval path blocks auto-apply | Sensitive path / `require_firebreak_approval` holds for approval; `tif approve` / `reject` work | QA | **B07** | **Pass** (automated) |
 | **F3** | Five-Alarm current-failure gate | Historical risk alone cannot escalate; clean-room omits prior patch content (tests + one manual) | TL | **B08, B09**; phase3 unit tests | **Pass** (automated) |
 | **F4** | Verification incomplete ≠ pass | Empty/unresolved required plan fails floor | TL | **A05** | **Pass** (automated) |
-| **F5** | At least one first-class agent adapter works E2E | Full lifecycle on **one** of Claude Code / Codex / Gemini / OpenCode on Win **and** Unix: begin → implement → complete → status | DX | Protocol proxy ready: **B12** + `adapter_conformance` + [VERSION_MATRIX](adapters/VERSION_MATRIX.md). **Does not satisfy this Must** until one real host product is exercised on Win **and** Unix. | **In progress** |
+| **F5** | At least one first-class agent adapter works E2E | Full lifecycle on **one** of Claude Code / Codex / Gemini / OpenCode on Win **and** Unix: begin → implement → complete → status | DX | Protocol **B12** + conformance + adapter install smoke (**F5-smoke**). **Still In progress** until one real host product run on Win **and** Unix is recorded in VERSION_MATRIX. | **In progress** |
 | **F6** | CLI is supportable | Core ops documented in user-guide; `--json` protocol matches `docs/protocol/v1.md` for operations used by adapters | DX | **B11, B14**; protocol doc | **Pass** (automated + docs) |
 
 ### 3.3 Quality & release engineering
@@ -102,7 +102,7 @@ _
 | ID | Criterion | Pass / Fail criteria | Owner | Evidence | Status |
 |----|-----------|----------------------|-------|----------|--------|
 | **Q1** | Multi-OS CI green on release commit | `ubuntu`, `windows`, `macos` fmt + clippy `-D warnings` + tests pass on the commit to be tagged | REL | `.github/workflows/ci.yml` matrix + `user-testing` job | **Pass** on green main (re-check at tag) |
-| **Q2** | No open P0 bugs | Issue tracker: zero open bugs labeled `P0` / `blocker` for v1.0 | EM | Re-check at go/no-go | Unknown (process) |
+| **Q2** | No open P0 bugs | Issue tracker: zero open bugs labeled `P0` / `blocker` for v1.0 | EM | 2026-08-05: zero open issues on repo (API check). **Re-check at tag.** | **Pass** (as of 2026-08-05) |
 | **Q3** | Versioning discipline | SemVer `1.0.0`; schema + protocol compatibility documented; CHANGELOG has v1.0 section | REL | Still `0.1.0`; VERSIONING.md present | Unknown (tag-time) |
 | **Q4** | Install without Rust | Clean machine (or VM) install via `scripts/install.sh` **and** `scripts/install.ps1` from a real GitHub Release asset; `tif --version` works | REL | Scripts present; needs real `v*` release dry-run | In progress |
 | **Q5** | Checksums verified in install path | Install scripts verify SHA-256 against published `SHA256SUMS` by default (refuse if missing/mismatch); documented in user-guide | REL | `scripts/lib/sha256-verify.sh` + **D01/D02**; user-guide; field Pass after tagged release dry-run | **Pass** (code + contract tests); field dry-run remaining |
@@ -123,7 +123,7 @@ _
 | **V1** | Controlled soak | ≥ **10 business days** (or ≥ **50** real coding tasks) on real repos with real agents; log incidents | QA / EM | AI substitute **C01 N=50** + Tiers A–D; CI `user-testing` uploads evidence pack | **Pass** (AI field battery; optional calendar soak residual) |
 | **V2** | Incident log empty of unfixed P0s | All soak P0s fixed or accepted with mitigation before tag | EM | C01 requires ≥98% / zero P0-style corruption; re-check issues at tag | **Pass** (battery); re-verify at tag |
 | **V3** | Recovery drill | Operator completes dual-failure / rollback drill using only user-guide; time-to-recover recorded | SRE | **B13** records `time_to_recover_ms` using documented rollback/status/audit | **Pass** (automated drill) |
-| **V4** | Support ownership named | On-call or support rota exists for apply/rollback incidents; contact path in README or user-guide | SRE | Contact path documented (README + user-guide → GitHub Issues). **Named rota / owner still required** for Pass. | **In progress** |
+| **V4** | Support ownership named | On-call or support rota exists for apply/rollback incidents; contact path in README or user-guide | SRE | Owner: **9thLevelSoftware** maintainers; GitHub Issues path in README + user-guide | **Pass** |
 
 ---
 
@@ -138,7 +138,7 @@ _
 | **P1-5** | aarch64 (or documented skip) | Release matrix cell green **or** “unsupported arch” listed in install docs | REL | `release.yml` builds `aarch64-unknown-linux-gnu` + `aarch64-apple-darwin` | **Pass** (release matrix) |
 | **P1-6** | Performance budgets recorded | Policy resolve p95 budget; assess on ≥10k-line diff budget; measured once on reference hardware | QA | **C03** (policy×100 + assess 10k lines); CI user-testing | **Pass** (smoke budgets) |
 | **P1-7** | Adapter version matrix | Table: agent product version × tested tif version × OS | DX | [adapters/VERSION_MATRIX.md](adapters/VERSION_MATRIX.md) has protocol placeholders only — **needs real agent product versions** | **In progress** |
-| **P1-8** | Upgrade / uninstall tested | Install → upgrade to next RC → uninstall leaves no secrets in default paths | REL | | Unknown |
+| **P1-8** | Upgrade / uninstall tested | Install → upgrade to next RC → uninstall leaves no secrets in default paths | REL | `scripts/uninstall.{sh,ps1}` + e2e **P18** (install layout→upgrade overwrite→uninstall). Full release-channel dry-run: [RELEASE_DRY_RUN.md](RELEASE_DRY_RUN.md) | **Pass** (automated uninstall path); release-channel residual in Q4 |
 | **P1-9** | TUI destructive ops reviewed | Rollback/purge confirmations verified manually on narrow terminal | DX | TUI unit/state tests for confirmations | Pass (unit); manual residual |
 | **P1-10** | CI write path dry-run | Template job with `allow_write` produces patch artifact only; protected branch never updated | SRE | Templates double-gated; threat-model | **Pass** (template review) |
 
@@ -279,13 +279,12 @@ Honest fill-in for planning (update as evidence lands):
 
 **Residual Must (blocks Ready):**
 
-1. **F5** — real agent host E2E on Win **and** Unix (protocol battery is preparatory only)  
-2. **V4** — name a support / incident owner (contact path alone is not enough)  
-3. **Q2** — zero open P0 issues at go/no-go  
-4. **Q3** — tag `1.0.0` + CHANGELOG section  
-5. **Q4** — install dry-run from a real GitHub Release  
+1. **F5** — real agent host E2E on Win **and** Unix (install smoke + protocol are preparatory only)  
+2. **Q3** — tag `1.0.0` + CHANGELOG section  
+3. **Q4** — install dry-run from a real GitHub Release ([RELEASE_DRY_RUN.md](RELEASE_DRY_RUN.md))  
+4. **Q2** — re-confirm zero open P0 issues at tag time  
 
-**Should residual:** P1-1 signed tag dry-run; human SEC countersign on X2; P1-4/P1-8 vendor/upgrade paths.
+**Should residual:** P1-1 signed tag dry-run; P1-2 PM signature; P1-4/P1-7 vendor product versions; human SEC countersign on X2.
 
 **Implication:** Not Ready for unconditional v1.0 until F5 + V4 + tag-time Q items clear. Prefer messaging:
 
