@@ -5,6 +5,7 @@
 //! Product promise: **Contain the fire. Do not remodel the building.**
 
 pub mod adaptation;
+pub mod adapter_conformance;
 pub mod assess;
 pub mod audit;
 pub mod config;
@@ -30,6 +31,7 @@ pub use adaptation::{
     AppliedKnobs, PromotionGate, SelfApplyKnob, SelfApplyValue, VariantAction, VariantDecision,
     VariantStatus,
 };
+pub use adapter_conformance::{adapter_may_proceed, check_envelope, EnvelopeCheck};
 pub use assess::{
     analyze_test_change_diff, AssessmentStatus, DamageAssessment, DamageAssessor, TestChange,
 };
@@ -48,7 +50,7 @@ pub use diff::{
     metrics_from_tree_diff, metrics_from_unified_diff, metrics_from_unified_diff_checked,
     path_looks_generated, path_looks_like_test, DependencyDelta, MAX_UNIFIED_DIFF_BYTES,
 };
-pub use error::{Result, TifError};
+pub use error::{is_disk_full_io, Result, TifError};
 pub use fire_level::FireLevel;
 pub use firebreak::{
     fail_safe_guard, BackendGenerateRequest, BackendGenerateResult, FirebreakEngine,

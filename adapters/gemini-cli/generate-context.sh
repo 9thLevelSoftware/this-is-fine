@@ -1,20 +1,21 @@
 #!/usr/bin/env bash
 # Write active pressure/policy context for Gemini CLI (@file inclusion).
+# Argv-safe: task text is passed as a single quoted argument to tif.
 set -euo pipefail
 
 TASK="${1:-current task}"
 REPO="${TIF_REPO:-.}"
 OUT="${TIF_CONTEXT_OUT:-$REPO/.this-is-fine/active-policy.md}"
 
-mkdir -p "$(dirname "$OUT")"
+mkdir -p "$(dirname "${OUT}")"
 
 if ! command -v tif >/dev/null 2>&1; then
   echo "tif not on PATH" >&2
   exit 1
 fi
 
-POLICY_JSON="$(tif --repo "$REPO" policy resolve --json --task "$TASK")"
-BEGIN_JSON="$(tif --repo "$REPO" run begin --json --agent gemini-cli --task "$TASK" || true)"
+POLICY_JSON="$(tif --repo "${REPO}" policy resolve --json --task "${TASK}")"
+BEGIN_JSON="$(tif --repo "${REPO}" run begin --json --agent gemini-cli --task "${TASK}" || true)"
 
 {
   echo "# This Is Fine — Active Containment Policy"
@@ -25,31 +26,31 @@ BEGIN_JSON="$(tif --repo "$REPO" run begin --json --agent gemini-cli --task "$TA
     echo "## Status"
     echo
     echo '```'
-    echo "$POLICY_JSON" | jq -r '.data.compact_status // "n/a"'
+    echo "${POLICY_JSON}" | jq -r '.data.compact_status // "n/a"'
     echo '```'
     echo
     echo "## Pressure"
     echo
-    echo "$POLICY_JSON" | jq -r '.data.policy.pressure.body // empty'
+    echo "${POLICY_JSON}" | jq -r '.data.policy.pressure.body // empty'
     echo
     echo "## Limits"
     echo
     echo '```json'
-    echo "$POLICY_JSON" | jq '.data.policy.limits'
+    echo "${POLICY_JSON}" | jq '.data.policy.limits'
     echo '```'
-    RUN_ID="$(echo "$BEGIN_JSON" | jq -r '.data.run_id // empty')"
-    if [[ -n "$RUN_ID" ]]; then
+    RUN_ID="$(echo "${BEGIN_JSON}" | jq -r '.data.run_id // empty')"
+    if [[ -n "${RUN_ID}" ]]; then
       echo
-      echo "run_id: \`$RUN_ID\`"
+      echo "run_id: \`${RUN_ID}\`"
     fi
   else
     echo '```json'
-    echo "$POLICY_JSON"
+    echo "${POLICY_JSON}"
     echo '```'
   fi
   echo
   echo "Contain the fire. Do not remodel the building."
-} >"$OUT"
+} >"${OUT}"
 
-echo "Wrote $OUT" >&2
-echo "$OUT"
+echo "Wrote ${OUT}" >&2
+echo "${OUT}"

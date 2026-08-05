@@ -1396,6 +1396,7 @@ dependencies = [
  "ratatui",
  "serde",
  "serde_json",
+ "tempfile",
  "tif-core",
  "toml",
 ]

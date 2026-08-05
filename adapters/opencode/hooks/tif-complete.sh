@@ -3,4 +3,4 @@
 set -euo pipefail
 RUN_ID="${1:?run_id required}"
 REPO="${TIF_REPO:-.}"
-exec tif --repo "$REPO" run complete --json "$RUN_ID" --from-git
+exec tif --repo "${REPO}" run complete --json "${RUN_ID}" --from-git

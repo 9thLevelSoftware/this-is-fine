@@ -1,9 +1,10 @@
-# This Is Fine — read-only CI template (GitHub Actions)
+# This Is Fine — CI template (GitHub Actions)
 #
 # Default behavior: assess + verify only. Never modifies protected branches.
-# Optional write/PR behavior requires explicit repository configuration
-# (ci.allow_write / ci.allow_pr in .this-is-fine.toml) and additional jobs
-# that you enable deliberately.
+# Optional write/PR behavior requires ALL of:
+#   1. ci.allow_write / ci.allow_pr in .this-is-fine.toml
+#   2. Repository variables TIF_ALLOW_WRITE / TIF_ALLOW_PR set to "true"
+#   3. The write job is present (below) and not skipped
 #
 # Prerequisites: install the `tif` binary (release artifact or cargo install).
 
@@ -21,16 +22,24 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Install This Is Fine
-        # Replace with your preferred install method (release binary, cargo, package).
         run: |
           if command -v tif >/dev/null 2>&1; then
             tif --version
+          elif [ -n "${{ secrets.TIF_INSTALL_URL }}" ]; then
+            curl -fsSL "${{ secrets.TIF_INSTALL_URL }}" | sh
+            export PATH="$HOME/.local/bin:$PATH"
+            tif --version
           else
-            echo "Install tif before enabling this workflow (cargo install --path crates/tif)."
+            echo "Install tif before enabling this workflow (release binary or cargo install --path crates/tif)."
             cargo install --path crates/tif --locked || cargo install --path crates/tif
+            export PATH="$HOME/.cargo/bin:$PATH"
           fi
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
       - name: Ensure config
         run: |
@@ -43,20 +52,101 @@ jobs:
 
       - name: Verify (repository-native commands)
         run: tif verify --json
-        # Allow continue for discovery-only projects; prefer fail when commands are explicit.
         continue-on-error: false
 
-      - name: Assess working tree metrics (placeholder)
-        # Wire real git diff stats in your pipeline, e.g.:
-        #   files_added=$(git diff --diff-filter=A --name-only origin/main...HEAD | wc -l)
+      - name: Assess (from git when available)
         run: |
-          tif assess --json \
-            --files-added 0 \
-            --files-changed 0 \
-            --lines-added 0 \
-            --deps-added 0
+          if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+            tif assess --from-git --json || tif assess --json \
+              --files-added 0 --files-changed 0 --lines-added 0 --deps-added 0
+          else
+            tif assess --json \
+              --files-added 0 --files-changed 0 --lines-added 0 --deps-added 0
+          fi
 
-      # Optional write path (disabled by default — never enable without review):
-      # - name: Optional Firebreak patch artifact
-      #   if: false
-      #   run: tif firebreak --json
+  # ---------------------------------------------------------------------------
+  # Optional CI write path (guarded — off by default)
+  # Produces a patch artifact; never force-pushes to protected branches.
+  # Enable only when:
+  #   - .this-is-fine.toml has ci.allow_write = true (and allow_pr if opening PRs)
+  #   - repo variable TIF_ALLOW_WRITE == 'true'
+  # ---------------------------------------------------------------------------
+  firebreak-write:
+    name: Optional Firebreak write (guarded)
+    needs: contain
+    if: ${{ vars.TIF_ALLOW_WRITE == 'true' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install This Is Fine
+        run: |
+          if command -v tif >/dev/null 2>&1; then
+            tif --version
+          else
+            cargo install --path crates/tif --locked || cargo install --path crates/tif
+            echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          fi
+
+      - name: Guard — config must allow write
+        id: guard
+        run: |
+          set -euo pipefail
+          if [ ! -f .this-is-fine.toml ]; then
+            echo "No .this-is-fine.toml — refusing write path"
+            echo "allowed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # Fail closed unless both allow_write and (optional) allow_pr are intentional.
+          if grep -E '^\s*allow_write\s*=\s*true' .this-is-fine.toml >/dev/null 2>&1; then
+            echo "allowed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ci.allow_write is not true — skipping write job body"
+            echo "allowed=false" >> "$GITHUB_OUTPUT"
+          fi
+          if grep -E '^\s*allow_pr\s*=\s*true' .this-is-fine.toml >/dev/null 2>&1; then
+            echo "allow_pr=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "allow_pr=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Run Firebreak (no auto-apply to protected branch)
+        if: steps.guard.outputs.allowed == 'true'
+        run: |
+          set -euo pipefail
+          mkdir -p .this-is-fine/ci-out
+          # Prefer assess + optional auto firebreak on a non-protected worktree.
+          # Candidates and patches land as artifacts only.
+          tif assess --from-git --json > .this-is-fine/ci-out/assess.json || true
+          tif firebreak --json --auto > .this-is-fine/ci-out/firebreak.json || true
+          # Collect any unified diffs under the state dir for the artifact.
+          find .this-is-fine -name '*.diff' -o -name '*.patch' 2>/dev/null \
+            | head -n 50 > .this-is-fine/ci-out/patch-list.txt || true
+          git diff > .this-is-fine/ci-out/working-tree.patch || true
+
+      - name: Upload patch artifact
+        if: steps.guard.outputs.allowed == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: tif-firebreak-patches
+          path: .this-is-fine/ci-out/
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Optional PR (extra guard)
+        if: >-
+          steps.guard.outputs.allowed == 'true'
+          && steps.guard.outputs.allow_pr == 'true'
+          && vars.TIF_ALLOW_PR == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          echo "PR generation is repository-specific."
+          echo "Wire gh pr create against a dedicated branch after reviewing the patch artifact."
+          echo "This step intentionally does not open PRs without human review of the artifact."
