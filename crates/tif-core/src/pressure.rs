@@ -121,7 +121,15 @@ impl PressureEngine {
     }
 
     /// Select a scenario for the task category and fire level.
-    pub fn select(&self, category: TaskCategory, fire_level: FireLevel) -> PressureScenario {
+    ///
+    /// Never returns a family excluded by `allowed_families`. When the preferred
+    /// family is disallowed, falls back to `context_fire` if allowed, otherwise
+    /// the first allowed curated template. Errors if the allow-list admits none.
+    pub fn select(
+        &self,
+        category: TaskCategory,
+        fire_level: FireLevel,
+    ) -> crate::error::Result<PressureScenario> {
         let family = category.pressure_family();
         let template = TEMPLATES
             .iter()
@@ -131,7 +139,13 @@ impl PressureEngine {
                     .iter()
                     .find(|t| t.family == "context_fire" && self.family_allowed(t.family))
             })
-            .unwrap_or(&TEMPLATES[3]); // context_fire fallback
+            .or_else(|| TEMPLATES.iter().find(|t| self.family_allowed(t.family)))
+            .ok_or_else(|| {
+                crate::error::TifError::Config(format!(
+                    "no pressure scenario template allowed for families {:?}; task prefers `{family}`",
+                    self.allowed_families
+                ))
+            })?;
 
         let intensity = fire_level_guidance(fire_level);
         let mut body = String::new();
@@ -144,14 +158,14 @@ impl PressureEngine {
             template.title, template.family, fire_level, template.body, intensity
         ));
 
-        PressureScenario {
+        Ok(PressureScenario {
             family: template.family.to_string(),
             template_id: template.id.to_string(),
             template_version: template.version.to_string(),
             fire_level,
             body,
             compact_status: format!("🔥 Containment active · Fire Level {}", fire_level.as_u8()),
-        }
+        })
     }
 }
 
@@ -182,7 +196,9 @@ mod tests {
     #[test]
     fn baseline_included_by_default() {
         let engine = PressureEngine::new(true, vec![]);
-        let s = engine.select(TaskCategory::BugFix, FireLevel::Containment);
+        let s = engine
+            .select(TaskCategory::BugFix, FireLevel::Containment)
+            .unwrap();
         assert!(s.body.contains("CONTAINMENT MODE"));
         assert_eq!(s.family, "production_incident");
         assert!(s.compact_status.contains("Fire Level 3"));
@@ -191,8 +207,29 @@ mod tests {
     #[test]
     fn respects_allowed_families() {
         let engine = PressureEngine::new(false, vec!["context_fire".into()]);
-        let s = engine.select(TaskCategory::BugFix, FireLevel::Smolder);
+        let s = engine
+            .select(TaskCategory::BugFix, FireLevel::Smolder)
+            .unwrap();
         // Bug fix wants production_incident but only context_fire allowed → fallback
         assert_eq!(s.family, "context_fire");
+    }
+
+    #[test]
+    fn does_not_inject_disallowed_context_fire_fallback() {
+        // Only release_freeze allowed; task prefers production_incident.
+        let engine = PressureEngine::new(false, vec!["release_freeze".into()]);
+        let s = engine
+            .select(TaskCategory::BugFix, FireLevel::Containment)
+            .unwrap();
+        assert_eq!(s.family, "release_freeze");
+    }
+
+    #[test]
+    fn errors_when_no_allowed_family_matches() {
+        let engine = PressureEngine::new(false, vec!["nonexistent_family".into()]);
+        let err = engine
+            .select(TaskCategory::BugFix, FireLevel::Ember)
+            .unwrap_err();
+        assert!(err.to_string().contains("no pressure scenario template"));
     }
 }

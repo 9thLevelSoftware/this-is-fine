@@ -349,46 +349,73 @@ fn run_shell_command_with_timeout(
 ) -> std::io::Result<CommandOutcome> {
     let mut child = spawn_verification_shell(root, command)?;
 
+    // Drain pipes concurrently while the child runs. Waiting for exit before
+    // reading can deadlock when stdout/stderr fill the OS pipe buffer.
+    let stdout_pipe = child.stdout.take();
+    let stderr_pipe = child.stderr.take();
+    let stdout_handle = thread::spawn(move || {
+        let mut buf = Vec::new();
+        if let Some(mut out) = stdout_pipe {
+            let _ = out.read_to_end(&mut buf);
+        }
+        buf
+    });
+    let stderr_handle = thread::spawn(move || {
+        let mut buf = Vec::new();
+        if let Some(mut err) = stderr_pipe {
+            let _ = err.read_to_end(&mut buf);
+        }
+        buf
+    });
+
     let start = Instant::now();
-    loop {
+    let timed_out = loop {
         match child.try_wait()? {
-            Some(_) => {
-                let mut stdout = Vec::new();
-                let mut stderr = Vec::new();
-                if let Some(mut out) = child.stdout.take() {
-                    let _ = out.read_to_end(&mut stdout);
-                }
-                if let Some(mut err) = child.stderr.take() {
-                    let _ = err.read_to_end(&mut stderr);
-                }
-                let status = child.wait()?;
-                return Ok(CommandOutcome {
-                    status: if status.success() {
-                        CheckStatus::Passed
-                    } else {
-                        CheckStatus::Failed
-                    },
-                    exit_code: status.code(),
-                    stdout: String::from_utf8_lossy(&stdout).into_owned(),
-                    stderr: String::from_utf8_lossy(&stderr).into_owned(),
-                });
-            }
+            Some(_) => break false,
             None => {
                 if start.elapsed() >= timeout {
                     kill_child_tree(&child);
                     let _ = child.kill();
-                    let _ = child.wait();
-                    return Ok(CommandOutcome {
-                        status: CheckStatus::TimedOut,
-                        exit_code: None,
-                        stdout: String::new(),
-                        stderr: format!("verification timed out after {}s", timeout.as_secs()),
-                    });
+                    break true;
                 }
                 thread::sleep(Duration::from_millis(25));
             }
         }
+    };
+
+    let status = child.wait()?;
+    let stdout = stdout_handle.join().unwrap_or_default();
+    let stderr = stderr_handle.join().unwrap_or_default();
+    let stdout = String::from_utf8_lossy(&stdout).into_owned();
+    let mut stderr = String::from_utf8_lossy(&stderr).into_owned();
+
+    if timed_out {
+        if stderr.is_empty() {
+            stderr = format!("verification timed out after {}s", timeout.as_secs());
+        } else {
+            stderr = format!(
+                "verification timed out after {}s\n{stderr}",
+                timeout.as_secs()
+            );
+        }
+        return Ok(CommandOutcome {
+            status: CheckStatus::TimedOut,
+            exit_code: status.code(),
+            stdout,
+            stderr,
+        });
     }
+
+    Ok(CommandOutcome {
+        status: if status.success() {
+            CheckStatus::Passed
+        } else {
+            CheckStatus::Failed
+        },
+        exit_code: status.code(),
+        stdout,
+        stderr,
+    })
 }
 
 fn spawn_verification_shell(root: &Path, command: &str) -> std::io::Result<std::process::Child> {
@@ -454,11 +481,36 @@ fn kill_child_tree(child: &std::process::Child) {
     }
 }
 
+/// Truncate to the last `max` bytes, never splitting a UTF-8 code point.
 fn tail_str(s: &str, max: usize) -> String {
     if s.len() <= max {
-        s.to_string()
-    } else {
-        s[s.len() - max..].to_string()
+        return s.to_string();
+    }
+    let mut start = s.len().saturating_sub(max);
+    while start < s.len() && !s.is_char_boundary(start) {
+        start += 1;
+    }
+    s[start..].to_string()
+}
+
+#[cfg(test)]
+mod tail_str_tests {
+    use super::tail_str;
+
+    #[test]
+    fn tail_str_ascii() {
+        assert_eq!(tail_str("hello world", 5), "world");
+    }
+
+    #[test]
+    fn tail_str_utf8_does_not_panic() {
+        // Multi-byte chars; max can land mid-codepoint if we sliced by bytes alone.
+        let s = "αβγδεζηθικ"; // each Greek letter is 2 bytes in UTF-8
+        let t = tail_str(s, 5);
+        assert!(t.len() <= 5);
+        assert!(s.ends_with(&t) || t.chars().all(|c| s.contains(c)));
+        // Must be valid UTF-8 (already a String) and not empty for large input.
+        assert!(!t.is_empty());
     }
 }
 

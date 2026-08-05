@@ -136,6 +136,24 @@ impl FirebreakEngine {
             });
         }
 
+        // A candidate that is smaller by score but still violates hard limits is not
+        // "ready" — it is still out of control and must not be queued for approval/apply.
+        if !candidate_score.within_containment {
+            return Ok(FirebreakOutcome {
+                success: false,
+                applied: false,
+                candidate_ready: false,
+                requires_approval: false,
+                simulated: true,
+                reviewer_id: Some(reviewer.id),
+                candidate_id: Some(candidate.id),
+                candidate_score: Some(candidate_score),
+                candidate_metrics: Some(candidate.metrics),
+                message: "Firebreak candidate still violates hard limits; original retained".into(),
+                original_preserved: true,
+            });
+        }
+
         let winner = select_smaller_verified(
             "original",
             &req.original_score,
@@ -445,5 +463,34 @@ mod tests {
     fn fail_safe_guard_blocks_unverified_replace() {
         assert!(fail_safe_guard(true, false).is_err());
         assert!(fail_safe_guard(true, true).is_ok());
+    }
+
+    #[test]
+    fn smaller_but_still_out_of_containment_is_not_ready() {
+        // Limit forbids any new files; simulation halves files but leaves some.
+        let mut policy = policy_with_limits();
+        policy.limits.new_files = Some(0);
+        let metrics = DiffMetrics {
+            runtime_dependencies_added: 1,
+            lines_added: 100,
+            files_added: 4,
+            ..Default::default()
+        };
+        let scorer = SimplicityScorer::new(policy.weights.clone(), policy.limits.clone());
+        let original_score = scorer.score(&metrics, &CorrectnessFloor::all_pass());
+        assert!(!original_score.within_containment);
+
+        let mut req = base_req(policy, metrics, original_score);
+        req.simulate_success = true;
+
+        let outcome = authorized_engine().simplify(req).unwrap();
+        assert!(!outcome.success);
+        assert!(!outcome.candidate_ready);
+        assert!(!outcome.applied);
+        assert!(outcome.original_preserved);
+        assert!(outcome.message.contains("still violates hard limits"));
+        let cand = outcome.candidate_score.as_ref().unwrap();
+        assert!(!cand.within_containment);
+        assert!(cand.score.is_finite());
     }
 }

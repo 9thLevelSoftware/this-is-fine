@@ -7,7 +7,7 @@ use clap::Parser;
 use cli::{Cli, Commands, PolicyCmd, RunCmd};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
-use tif_core::assess::DamageAssessor;
+use tif_core::assess::{AssessmentStatus, DamageAssessor};
 use tif_core::audit::{compact_status, AuditStore};
 use tif_core::config::{
     apply_cli_overrides, init_repository, load_config, RepoPaths, SHARED_CONFIG_NAME,
@@ -356,11 +356,13 @@ fn cmd_run_complete(
         .get_run(run_id)?
         .with_context(|| format!("run not found: {run_id}"))?;
 
-    let inspection = RepositoryInspector::new().inspect(root).ok();
+    let inspection = RepositoryInspector::new()
+        .inspect(root)
+        .context("repository inspection failed; cannot plan verification")?;
     // `--verification-passed` is a trusted-adapter signal (agent already ran checks).
     // It is not re-executed here; CI should omit this flag and use `tif verify` instead.
     let report = if let Some(passed) = verification_passed {
-        let mut r = plan_and_run(root, &cfg.verification, inspection.as_ref(), true)?;
+        let mut r = plan_and_run(root, &cfg.verification, Some(&inspection), true)?;
         r.all_required_passed = passed;
         r.incomplete_plan = !passed && r.checks.is_empty();
         if passed {
@@ -397,7 +399,7 @@ fn cmd_run_complete(
         }
         r
     } else {
-        plan_and_run(root, &cfg.verification, inspection.as_ref(), false)?
+        plan_and_run(root, &cfg.verification, Some(&inspection), false)?
     };
 
     let floor = CorrectnessFloor {
@@ -407,7 +409,11 @@ fn cmd_run_complete(
 
     let orch = RunOrchestrator::new();
     orch.complete(&cfg, &mut run, metrics, report, floor, auto_firebreak)?;
-    let _ = orch.close(&mut run);
+    // Keep OutOfControl open so manual `tif firebreak --run-id` can still run.
+    // Contained / Restored / Rejected / Applied runs may close.
+    if run.state != RunState::OutOfControl {
+        let _ = orch.close(&mut run);
+    }
     store.record_run(&run)?;
 
     Ok(emit_ok(
@@ -562,6 +568,18 @@ fn cmd_firebreak(
     };
 
     // Legal states for Firebreak: Contained, OutOfControl, or already FirebreakRunning.
+    // Closed runs with an OutOfControl assessment are reopened for manual Firebreak.
+    if run.state == RunState::Closed {
+        let was_out = run
+            .assessment
+            .as_ref()
+            .is_some_and(|a| a.status == AssessmentStatus::OutOfControl);
+        if was_out {
+            run.state = RunState::OutOfControl;
+            run.events
+                .push("closed -> out_of_control (reopened for firebreak)".into());
+        }
+    }
     if !matches!(
         run.state,
         RunState::Contained | RunState::OutOfControl | RunState::FirebreakRunning
@@ -714,16 +732,20 @@ fn cmd_policy_resolve(
 }
 
 fn cmd_verify(root: &Path, dry_run: bool, json: bool) -> anyhow::Result<ExitCode> {
-    let cfg = load_config(root).unwrap_or_default();
-    let inspection = RepositoryInspector::new().inspect(root).ok();
+    let cfg = load_config(root).context(
+        "failed to load .this-is-fine.toml; fix config errors before running verification",
+    )?;
+    let inspection = RepositoryInspector::new()
+        .inspect(root)
+        .context("repository inspection failed; cannot plan verification")?;
     let planner = VerificationPlanner::new();
-    let checks = planner.plan(&cfg.verification, inspection.as_ref());
+    let checks = planner.plan(&cfg.verification, Some(&inspection));
     let report = if dry_run {
         let mut runner = tif_core::VerificationRunner::new();
         runner.dry_run = true;
         runner.run(root, &checks)?
     } else {
-        plan_and_run(root, &cfg.verification, inspection.as_ref(), false)?
+        plan_and_run(root, &cfg.verification, Some(&inspection), false)?
     };
     let result = VerifyResult {
         report: report.clone(),

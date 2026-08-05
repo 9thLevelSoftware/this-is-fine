@@ -98,7 +98,7 @@ impl PolicyCompiler {
             config.pressure.include_baseline,
             &config.pressure.allowed_families,
         );
-        let pressure = pressure_engine.select(task_category, fire_level);
+        let pressure = pressure_engine.select(task_category, fire_level)?;
 
         let mut limits = config.simplicity.limits.clone();
         let mult = fire_level.pressure_multiplier();
