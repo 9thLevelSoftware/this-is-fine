@@ -70,3 +70,10 @@ Paste versions, OS, and links into V1_READINESS **Q4** / **P1-1** Evidence colum
 
 - **D01/D02** — SUMS verify logic (`scripts/lib/sha256-verify.sh`)
 - **P18** e2e — real `install.{sh,ps1} --from-source` → upgrade → `uninstall` + secrets purge
+
+## Evidence log
+
+| Date | OS | Tag | Result | Operator |
+|------|-----|-----|--------|----------|
+| 2026-08-05 | Windows | v0.1.1-rc.1 | Pass — SUMS verify, install, upgrade, uninstall | AI field agent |
+| | Unix | v0.1.1-rc.1 | Pending field dry-run | |
