@@ -391,6 +391,15 @@ where
     }
 }
 
+/// Fail the test if a scenario did not pass (shared by all tier_* integration tests).
+pub fn assert_scenario(r: &ScenarioResult) {
+    assert!(
+        r.pass,
+        "scenario {} failed ({}ms): {}\n{}",
+        r.id, r.duration_ms, r.notes, r.log
+    );
+}
+
 /// Write a minimal evidence pack directory.
 pub fn write_evidence_pack(out_dir: &Path, results: &[ScenarioResult]) -> io::Result<()> {
     fs::create_dir_all(out_dir.join("logs"))?;
