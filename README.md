@@ -5,7 +5,7 @@
 </p>
 
 <p align="center">
-  <strong>Contain the fire. Do not remodel the building.</strong><br/>
+  <strong>Let's turn up the heat!</strong><br/>
   <em>v1.0.0 — production release. The house is still on fire. The coffee is excellent.</em>
 </p>
 
@@ -39,7 +39,7 @@ Everything stays on your machine. No cloud telemetry. No surprise model calls. Y
 
 ## Install (no Rust required)
 
-Pick your preferred way to invite a dog into a burning repository.
+Pick your preferred level of firey goodness.
 
 ### One-liner (recommended)
 
@@ -53,7 +53,7 @@ curl -fsSL https://raw.githubusercontent.com/9thLevelSoftware/this-is-fine/main/
 irm https://raw.githubusercontent.com/9thLevelSoftware/this-is-fine/main/scripts/install.ps1 | iex
 ```
 
-Pin a version (highly recommended once you stop living on the edge):
+Pin a version:
 
 ```bash
 ./scripts/install.sh --version v1.0.0
