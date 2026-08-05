@@ -9,47 +9,30 @@ Versioning: see [docs/VERSIONING.md](docs/VERSIONING.md).
 
 ### Added
 
-- **Residual readiness rails**
-  - `scripts/uninstall.sh` / `uninstall.ps1` (optional secrets purge)
-  - E2E **P18** install→upgrade→uninstall; **F5-smoke** adapter installer smoke
-  - [RELEASE_DRY_RUN.md](docs/RELEASE_DRY_RUN.md) for Q4 field Pass
-- **AI field-validation battery (USER_TESTING)**
-  - `crates/tif-e2e` Tiers A–D (safety, journeys, C01 N=50 soak, local SUMS via `scripts/lib/sha256-verify.sh`)
-  - `scripts/user-test/run-all` + CI evidence pack artifacts
-- **v1.0 evidence closeout**
-  - V1_READINESS Must/Should statuses filled from automated evidence
-  - Internal security review pack (`docs/security/internal-review-x2.md`)
-  - Adapter version matrix; support contact paths in README / user-guide
-  - P1-2 binary-only package-channel waiver recorded
-- **v1.0 readiness engineering**
-  - Install scripts verify release assets against `SHA256SUMS` by default (`--skip-verify` / `-SkipVerify` escape hatch)
-  - Optional cosign keyful signing in the release workflow when `COSIGN_PRIVATE_KEY` is set
-  - OpenAI-compatible chat completion fixture contract tests (no live network keys)
-  - Clarified Conditional go/no-go: Must (P0) items cannot be waived
-- **Phase 7 agent adapters (E2E)**
-  - Windows PowerShell installers and hooks for Claude Code, Codex, Gemini CLI, OpenCode (alongside bash)
-  - Adapter JSON protocol conformance tests (`tif_core::adapter_conformance`) with mocked CLI envelopes
-  - Troubleshooting guide in `adapters/README.md`; argv-safe quoting across hooks
-- **Phase 8 production TUI**
-  - Live run event stream, Firebreak approve/reject/rollback, reviewer probe, audit filter, settings from shared config
-  - Layout: header · nav · center · metrics · bottom events; narrow terminals collapse the metrics panel
-  - Confirmations for destructive ops (rollback, audit purge); screen/state unit tests
-- **Phase 9 CI write + distribution**
-  - Guarded CI write job templates (GitHub Actions + GitLab) requiring `ci.allow_write` and `TIF_ALLOW_WRITE`
-  - GitHub Actions release workflow: multi-target binaries, checksums, attach on `v*` tags
-  - `scripts/install.sh` / `scripts/install.ps1`; Homebrew formula stub; WinGet packaging notes
-  - User guide + recovery runbook (`docs/user-guide.md`); README polish
-- **Phase 10 hardening / GA**
-  - Chaos tests: dual-failure `restore_pending` recovery; disk-full soft error classification (`TifError::DiskFull`)
-  - Policy resolve fast-path performance smoke test
-  - GA checklist complete in `docs/ROADMAP.md` with residual risks listed honestly
-  - Threat model updated for adapters, CI write path, distribution checksums
-- **Phase 4 intelligence depth**
-  - Multi-language inspector: JS/TS (`package.json` scripts + npm/pnpm/yarn/bun), Python (pytest/pyproject/poetry), Go (`go.mod`), Rust clippy/fmt confidence gates
-  - `confident: false` when evidence is weak; never invents test commands without scripts/config
-  - Dependency deltas from `Cargo.toml` / `package.json` / `go.mod` (runtime deps only)
-  - Generated-code path heuristics; `scoring_version` stamp on Damage Assessments
-  - Test-change policy helpers flag weakened assertion patterns as notes
+- **F5 vendor day checklist** — [docs/F5_VENDOR_DAY.md](docs/F5_VENDOR_DAY.md)
+
+## [0.1.1-rc.1] - 2026-08-05
+
+Release candidate for **Q4 install dry-run** (GitHub Release assets + SHA256SUMS). Not a SemVer stability promise beyond current `0.1.x` candidate quality.
+
+### Added (since 0.1.0 foundation)
+
+- Full production surface (phases 0–10): Firebreak, Five-Alarm, adapters, TUI, distribution
+- AI field-validation battery (`crates/tif-e2e` Tiers A–D, C01 N=50 soak)
+- Install SUMS verification (`scripts/lib/sha256-verify.sh`); uninstall scripts
+- V1 readiness evidence closeout + internal X2 security review pack
+- Residual rails: P18 install/upgrade/uninstall e2e; adapter install smoke
+
+### Residual for v1.0.0
+
+- Must **F5** real agent host E2E (see F5_VENDOR_DAY.md)
+- Must **Q3** tag `v1.0.0` + dedicated CHANGELOG section
+- Must **Q4** complete RELEASE_DRY_RUN against this or a later tag
+- Optional P1-1 cosign when secrets configured
+
+## [Unreleased archive notes]
+
+Historical detail for phases 0–10 remains summarized in git history and prior PR descriptions; this file tracks release-facing notes going forward.
   - Config `[simplicity.exceptions]` optional list recorded as audit notes
 - **Phase 5 audit / privacy / retention**
   - `tif audit --gc` runs age+size audit GC and isolation GC (`gc_expired_isolation` + rollback retention)

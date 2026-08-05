@@ -94,7 +94,7 @@ _
 | **F2** | Approval path blocks auto-apply | Sensitive path / `require_firebreak_approval` holds for approval; `tif approve` / `reject` work | QA | **B07** | **Pass** (automated) |
 | **F3** | Five-Alarm current-failure gate | Historical risk alone cannot escalate; clean-room omits prior patch content (tests + one manual) | TL | **B08, B09**; phase3 unit tests | **Pass** (automated) |
 | **F4** | Verification incomplete ≠ pass | Empty/unresolved required plan fails floor | TL | **A05** | **Pass** (automated) |
-| **F5** | At least one first-class agent adapter works E2E | Full lifecycle on **one** of Claude Code / Codex / Gemini / OpenCode on Win **and** Unix: begin → implement → complete → status | DX | Protocol **B12** + conformance + adapter install smoke (**F5-smoke**). **Still In progress** until one real host product run on Win **and** Unix is recorded in VERSION_MATRIX. | **In progress** |
+| **F5** | At least one first-class agent adapter works E2E | Full lifecycle on **one** of Claude Code / Codex / Gemini / OpenCode on Win **and** Unix: begin → implement → complete → status | DX | Protocol **B12** + **F5-smoke** installers. Runbook: [F5_VENDOR_DAY.md](F5_VENDOR_DAY.md). **Pass only after vendor day rows on Win+Unix.** | **In progress** |
 | **F6** | CLI is supportable | Core ops documented in user-guide; `--json` protocol matches `docs/protocol/v1.md` for operations used by adapters | DX | **B11, B14**; protocol doc | **Pass** (automated + docs) |
 
 ### 3.3 Quality & release engineering
@@ -104,7 +104,7 @@ _
 | **Q1** | Multi-OS CI green on release commit | `ubuntu`, `windows`, `macos` fmt + clippy `-D warnings` + tests pass on the commit to be tagged | REL | `.github/workflows/ci.yml` matrix + `user-testing` job | **Pass** on green main (re-check at tag) |
 | **Q2** | No open P0 bugs | Issue tracker: zero open bugs labeled `P0` / `blocker` for v1.0 | EM | 2026-08-05: zero open issues on repo (API check). **Re-check at tag.** | **Pass** (as of 2026-08-05) |
 | **Q3** | Versioning discipline | SemVer `1.0.0`; schema + protocol compatibility documented; CHANGELOG has v1.0 section | REL | Still `0.1.0`; VERSIONING.md present | Unknown (tag-time) |
-| **Q4** | Install without Rust | Clean machine (or VM) install via `scripts/install.sh` **and** `scripts/install.ps1` from a real GitHub Release asset; `tif --version` works | REL | Scripts present; needs real `v*` release dry-run | In progress |
+| **Q4** | Install without Rust | Clean machine (or VM) install via `scripts/install.sh` **and** `scripts/install.ps1` from a real GitHub Release asset; `tif --version` works | REL | Tag **`v0.1.1-rc.1`** pushed to trigger release workflow; dry-run per [RELEASE_DRY_RUN.md](RELEASE_DRY_RUN.md). **Pass when dry-run evidence recorded.** | **In progress** (RC tagged) |
 | **Q5** | Checksums verified in install path | Install scripts verify SHA-256 against published `SHA256SUMS` by default (refuse if missing/mismatch); documented in user-guide | REL | `scripts/lib/sha256-verify.sh` + **D01/D02**; user-guide; field Pass after tagged release dry-run | **Pass** (code + contract tests); field dry-run remaining |
 
 ### 3.4 Security & privacy
