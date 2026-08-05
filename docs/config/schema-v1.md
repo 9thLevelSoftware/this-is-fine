@@ -65,6 +65,15 @@ Hard caps (`null` / omitted = no cap). Partial local tables **merge field-wise**
 | `added_lines` | u32? | |
 | `score` | f64? | max weighted score |
 
+## `[simplicity.exceptions]`
+
+Optional string list of justified exceptions (paths/globs or free-text rationales). Recorded on Damage Assessments as **audit notes only** — never bypasses the correctness floor.
+
+```toml
+[simplicity]
+exceptions = ["vendor/** third-party pin", "generated protobuf stubs"]
+```
+
 ## `[approval]`
 
 | Field | Type | Default | Notes |
@@ -88,7 +97,7 @@ Hard caps (`null` / omitted = no cap). Partial local tables **merge field-wise**
 | Field | Type | Default | Notes |
 |-------|------|---------|-------|
 | `max_days` | u32 | `7` | Baseline retention |
-| `successful_commits` | u32 | `3` | Or N good commits (production wiring Phase 5) |
+| `successful_commits` | u32 | `3` | Or N good commits after apply (git when available); whichever comes first with `max_days` |
 
 ## `[ci]`
 

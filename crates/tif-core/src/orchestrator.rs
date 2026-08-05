@@ -363,13 +363,32 @@ impl RunOrchestrator {
             run.id.as_str(),
             "original",
             fire_level,
-            metrics,
+            metrics.clone(),
             score.clone(),
             floor.clone(),
             Some(verification.clone()),
         );
         assessment.pressure_template_id = Some(policy.pressure.template_id.clone());
         assessment.policy_version = Some(policy.policy_version.clone());
+        assessment.scoring_version = crate::scoring::SCORING_VERSION.to_string();
+        if !config.simplicity.exceptions.is_empty() {
+            assessment = crate::assess::DamageAssessor::attach_exceptions(
+                assessment,
+                &config.simplicity.exceptions,
+            );
+        }
+        // Structured dependency deltas when changed_paths include manifests.
+        if !metrics.changed_paths.is_empty() {
+            let root = std::path::Path::new(&run.repo_root);
+            let delta = crate::diff::dependency_delta_vs_git_head(root, &metrics.changed_paths);
+            if !delta.added.is_empty() || !delta.removed.is_empty() {
+                assessment = crate::assess::DamageAssessor::attach_dependency_deltas(
+                    assessment,
+                    delta.added,
+                    delta.removed,
+                );
+            }
+        }
 
         if score.disqualified {
             // Incomplete / required-unresolved → Unverified; hard required failures → Rejected.

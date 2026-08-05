@@ -183,7 +183,9 @@ tif rollback <run_id>
 tif audit show| --gc | --purge
 tif five-alarm --plan
 tif five-alarm --run <run_id> [--apply]
-tif adaptation
+tif adaptation status
+tif adaptation recommend --category bug_fix
+tif adaptation reset
 tif tui
 ```
 

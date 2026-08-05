@@ -5,6 +5,10 @@ use serde::{Deserialize, Serialize};
 use crate::config::{SimplicityLimits, SimplicityWeights};
 use crate::error::{Result, TifError};
 
+/// Bump when Damage Assessment weight semantics change in a way that breaks
+/// adaptation comparability across runs.
+pub const SCORING_VERSION: &str = "1";
+
 /// Measurable diff metrics used for scoring.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct DiffMetrics {

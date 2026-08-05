@@ -31,7 +31,7 @@ Field: `protocol_version` in every JSON response.
 
 ## Scoring version
 
-When Damage Assessment or weight semantics change in a way that breaks adaptation comparability, stamp `scoring_version` on assessments (planned Phase 4). Until then, treat scores as best-effort within a minor release.
+When Damage Assessment or weight semantics change in a way that breaks adaptation comparability, stamp `scoring_version` on assessments (currently `"1"` via `SCORING_VERSION`). Bump when weight semantics change.
 
 ## Release artifacts
 

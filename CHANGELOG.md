@@ -9,6 +9,26 @@ Versioning: see [docs/VERSIONING.md](docs/VERSIONING.md).
 
 ### Added
 
+- **Phase 4 intelligence depth**
+  - Multi-language inspector: JS/TS (`package.json` scripts + npm/pnpm/yarn/bun), Python (pytest/pyproject/poetry), Go (`go.mod`), Rust clippy/fmt confidence gates
+  - `confident: false` when evidence is weak; never invents test commands without scripts/config
+  - Dependency deltas from `Cargo.toml` / `package.json` / `go.mod` (runtime deps only)
+  - Generated-code path heuristics; `scoring_version` stamp on Damage Assessments
+  - Test-change policy helpers flag weakened assertion patterns as notes
+  - Config `[simplicity.exceptions]` optional list recorded as audit notes
+- **Phase 5 audit / privacy / retention**
+  - `tif audit --gc` runs age+size audit GC and isolation GC (`gc_expired_isolation` + rollback retention)
+  - Rollback retention: `max_days` **or** `successful_commits` (git commit count when available)
+  - Expanded secret redaction (JWT, DB connection strings, cookies, AWS-style keys)
+  - Binary artifact skip in audit store
+  - SQLite `busy_timeout` + WAL mode
+  - Exclusive apply lockfile under `.this-is-fine/apply.lock`
+- **Phase 6 adaptation & pressure evaluation**
+  - ≥2 versioned pressure variants per family in `pressure.rs`
+  - Persist pressure variant stats; promotion/demotion stubs with safety gates
+  - Offline eval harness (promote/demote mock variants in tests)
+  - Self-apply allowlist only: fire level bias ≤4, soft thresholds, pressure template — never floor / sensitive / verify
+  - CLI: `tif adaptation status|recommend|reset` (optional `--apply` on recommend)
 - **Phase 3 Five-Alarm staged recovery** (design §8.2)
   - Escalation gate: current containment failure required; historical risk alone refused
   - Stage 1: intensified Firebreak (higher attempt budget, stricter reviewer wording)
