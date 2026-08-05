@@ -20,6 +20,19 @@ pub struct ReviewerContextPackage {
     pub truncated: bool,
 }
 
+/// How a reviewer invocation is framed (standard Firebreak vs Five-Alarm stages).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReviewerInvocationMode {
+    #[default]
+    Standard,
+    /// Stage 1: intensified Firebreak — stricter wording, higher attempt budget.
+    Intensified,
+    /// Stage 3: clean-room — original state + task/policy/failure summary only.
+    /// Must never include previous implementation code.
+    CleanRoom,
+}
+
 /// Inputs for context packaging.
 #[derive(Debug, Clone)]
 pub struct ContextBuildRequest<'a> {
@@ -30,8 +43,38 @@ pub struct ContextBuildRequest<'a> {
     pub acceptance_criteria: Option<&'a str>,
     pub original_metrics: Option<&'a DiffMetrics>,
     /// Unified diff or file excerpts. Included only when `allow_source_egress`.
+    /// Forbidden for [`ReviewerInvocationMode::CleanRoom`].
     pub source_or_diff: Option<&'a str>,
     pub verification_plan_summary: Option<&'a str>,
+    /// Framing mode (standard / intensified / clean-room).
+    pub mode: ReviewerInvocationMode,
+    /// Structured failure summary for Five-Alarm (clean-room / intensified).
+    pub failure_summary: Option<&'a str>,
+    /// Previous implementation patch/code. Clean-room **rejects** non-empty values.
+    pub prior_implementation_code: Option<&'a str>,
+}
+
+impl<'a> ContextBuildRequest<'a> {
+    /// Convenience for standard Firebreak context (legacy call sites).
+    pub fn standard(
+        reviewer: &'a ReviewerConfig,
+        policy: &'a ContainmentPolicy,
+        task_category: TaskCategory,
+    ) -> Self {
+        Self {
+            reviewer,
+            policy,
+            task_category,
+            task_text: None,
+            acceptance_criteria: None,
+            original_metrics: None,
+            source_or_diff: None,
+            verification_plan_summary: None,
+            mode: ReviewerInvocationMode::Standard,
+            failure_summary: None,
+            prior_implementation_code: None,
+        }
+    }
 }
 
 const SYSTEM_BASE: &str = r#"You are a Firebreak reviewer for This Is Fine.
@@ -51,9 +94,69 @@ Rules:
 Paths must be relative and must not contain `..` or absolute roots.
 "#;
 
-/// Build a redacted context package. Enforces egress policy.
+const SYSTEM_INTENSIFIED: &str = r#"You are an INTENSIFIED Firebreak reviewer for This Is Fine (Five-Alarm Stage 1).
+Your job is MAXIMUM restraint: the SMALLEST correct implementation that satisfies the
+task and verification plan while obeying the containment policy.
+
+Strict rules (non-negotiable):
+1. Prefer deletion and reuse; forbid new dependencies unless the task cannot succeed without them.
+2. Prefer the fewest files, fewest public interfaces, and fewest abstractions possible.
+3. Never weaken security, validation, error handling, or required tests.
+4. Do not invent speculative flexibility, configuration knobs, or framework layers.
+5. Every added line must be justified by the acceptance criteria.
+6. Output ONLY a JSON object (no markdown fences) with this shape:
+{
+  "files": [{"path": "relative/path", "content": "full file contents"}],
+  "delete": ["relative/paths/to/remove"],
+  "notes": ["brief justification"]
+}
+Paths must be relative and must not contain `..` or absolute roots.
+"#;
+
+const SYSTEM_CLEAN_ROOM: &str = r#"You are a CLEAN-ROOM implementation model for This Is Fine (Five-Alarm Stage 3).
+You must solve the task from the original repository state, task description, acceptance
+criteria, containment policy, verification plan, and a structured failure summary only.
+
+You will NOT receive previous implementation code, patches, or candidate diffs.
+Do not assume or invent details from a prior attempt beyond the failure summary.
+
+Rules:
+1. Produce the SMALLEST correct implementation that satisfies the task and verification plan.
+2. Prefer deletion, reuse, and configuration over new files/dependencies/abstractions.
+3. Never weaken security, validation, error handling, or required tests.
+4. Output ONLY a JSON object (no markdown fences) with this shape:
+{
+  "files": [{"path": "relative/path", "content": "full file contents"}],
+  "delete": ["relative/paths/to/remove"],
+  "notes": ["brief justification"]
+}
+Paths must be relative and must not contain `..` or absolute roots.
+"#;
+
+/// Build a redacted context package. Enforces egress policy and clean-room invariants.
 pub fn build_reviewer_context(req: &ContextBuildRequest<'_>) -> Result<ReviewerContextPackage> {
-    let want_source = req.source_or_diff.map(|s| !s.is_empty()).unwrap_or(false);
+    // Clean-room hard gate: no previous implementation code in the package.
+    if req.mode == ReviewerInvocationMode::CleanRoom {
+        if req
+            .prior_implementation_code
+            .map(|s| !s.is_empty())
+            .unwrap_or(false)
+        {
+            return Err(TifError::Other(
+                "clean-room context forbids prior_implementation_code (no previous patch content)"
+                    .into(),
+            ));
+        }
+        if req.source_or_diff.map(|s| !s.is_empty()).unwrap_or(false) {
+            return Err(TifError::Other(
+                "clean-room context forbids source_or_diff (no previous implementation code)"
+                    .into(),
+            ));
+        }
+    }
+
+    let want_source = req.mode != ReviewerInvocationMode::CleanRoom
+        && req.source_or_diff.map(|s| !s.is_empty()).unwrap_or(false);
     if want_source && !req.reviewer.allow_source_egress {
         return Err(TifError::UnauthorizedReviewer(format!(
             "reviewer `{}` has allow_source_egress=false; cannot include source/diff in provider request",
@@ -61,7 +164,23 @@ pub fn build_reviewer_context(req: &ContextBuildRequest<'_>) -> Result<ReviewerC
         )));
     }
 
+    let system_base = match req.mode {
+        ReviewerInvocationMode::Standard => SYSTEM_BASE,
+        ReviewerInvocationMode::Intensified => SYSTEM_INTENSIFIED,
+        ReviewerInvocationMode::CleanRoom => SYSTEM_CLEAN_ROOM,
+    };
+
     let mut user = String::new();
+    if req.mode == ReviewerInvocationMode::Intensified {
+        user.push_str(
+            "## Mode\nINTENSIFIED Firebreak (Five-Alarm Stage 1) — maximum restraint.\n\n",
+        );
+    } else if req.mode == ReviewerInvocationMode::CleanRoom {
+        user.push_str(
+            "## Mode\nCLEAN-ROOM (Five-Alarm Stage 3) — no previous implementation code.\n\n",
+        );
+    }
+
     user.push_str("## Task\n");
     user.push_str(&format!("category: {}\n", req.task_category.as_str()));
     if let Some(t) = req.task_text {
@@ -106,8 +225,22 @@ pub fn build_reviewer_context(req: &ContextBuildRequest<'_>) -> Result<ReviewerC
         user.push('\n');
     }
 
+    if let Some(fs) = req.failure_summary {
+        if !fs.is_empty() {
+            user.push_str("\n## Structured failure summary\n");
+            user.push_str(fs);
+            user.push('\n');
+        }
+    }
+
     let mut includes_source = false;
-    if want_source {
+    if req.mode == ReviewerInvocationMode::CleanRoom {
+        user.push_str(
+            "\n## Source / previous implementation\n\
+             Not provided (clean-room). Implement from task, criteria, policy, verification plan, \
+             and failure summary only. Do not request or reconstruct prior patch content.\n",
+        );
+    } else if want_source {
         if let Some(src) = req.source_or_diff {
             user.push_str("\n## Source / diff (redacted)\n");
             user.push_str(src);
@@ -121,7 +254,7 @@ pub fn build_reviewer_context(req: &ContextBuildRequest<'_>) -> Result<ReviewerC
     }
 
     // Always redact secrets before send / log.
-    let system_prompt = redact_secrets(SYSTEM_BASE);
+    let system_prompt = redact_secrets(system_base);
     let mut user_prompt = redact_secrets(&user);
     let mut truncated = false;
     let max = req.reviewer.max_context_bytes as usize;
@@ -136,12 +269,50 @@ pub fn build_reviewer_context(req: &ContextBuildRequest<'_>) -> Result<ReviewerC
         truncated = true;
     }
 
+    // Final clean-room assertion: package must not contain prior patch markers.
+    if req.mode == ReviewerInvocationMode::CleanRoom {
+        assert_clean_room_package(&system_prompt, &user_prompt, includes_source)?;
+    }
+
     Ok(ReviewerContextPackage {
         system_prompt,
         user_prompt,
         includes_source,
         truncated,
     })
+}
+
+/// Assert a clean-room package has no prior implementation / patch content.
+pub fn assert_clean_room_package(
+    system_prompt: &str,
+    user_prompt: &str,
+    includes_source: bool,
+) -> Result<()> {
+    if includes_source {
+        return Err(TifError::Other(
+            "clean-room package must not include source/diff content".into(),
+        ));
+    }
+    let combined = format!("{system_prompt}\n{user_prompt}").to_lowercase();
+    // Markers that indicate previous implementation *payload* leaked into the package.
+    // Instructional text that says "do not include prior patch" is allowed; these
+    // patterns target actual leaked sections/headers.
+    const FORBIDDEN: &[&str] = &[
+        "## source / diff",
+        "previous implementation code:",
+        "unified diff of previous",
+        "candidate patch body:",
+        "```diff",
+        "diff --git ",
+    ];
+    for marker in FORBIDDEN {
+        if combined.contains(marker) {
+            return Err(TifError::Other(format!(
+                "clean-room package contains forbidden prior-implementation marker: {marker}"
+            )));
+        }
+    }
+    Ok(())
 }
 
 /// Reject path traversal in reviewer-proposed paths.
@@ -295,6 +466,9 @@ mod tests {
             original_metrics: None,
             source_or_diff: Some("fn secret() { let api_key = \"sk-abc\"; }"),
             verification_plan_summary: None,
+            mode: ReviewerInvocationMode::Standard,
+            failure_summary: None,
+            prior_implementation_code: None,
         };
         assert!(build_reviewer_context(&req).is_err());
     }
@@ -313,10 +487,109 @@ mod tests {
             original_metrics: None,
             source_or_diff: Some("password=hunter2"),
             verification_plan_summary: Some("cargo test"),
+            mode: ReviewerInvocationMode::Standard,
+            failure_summary: None,
+            prior_implementation_code: None,
         };
         let pkg = build_reviewer_context(&req).unwrap();
         assert!(pkg.includes_source);
         assert!(!pkg.user_prompt.contains("hunter2"));
+    }
+
+    #[test]
+    fn intensified_uses_stricter_wording() {
+        let rev = ReviewerConfig::mock("r", 1);
+        let p = policy();
+        let req = ContextBuildRequest {
+            reviewer: &rev,
+            policy: &p,
+            task_category: TaskCategory::BugFix,
+            task_text: Some("shrink"),
+            acceptance_criteria: Some("pass tests"),
+            original_metrics: None,
+            source_or_diff: None,
+            verification_plan_summary: Some("cargo test"),
+            mode: ReviewerInvocationMode::Intensified,
+            failure_summary: Some("exceeded new_files limit"),
+            prior_implementation_code: None,
+        };
+        let pkg = build_reviewer_context(&req).unwrap();
+        assert!(pkg.system_prompt.contains("INTENSIFIED"));
+        assert!(pkg.user_prompt.contains("INTENSIFIED"));
+        assert!(pkg.user_prompt.contains("Structured failure summary"));
+        assert!(!pkg.includes_source);
+    }
+
+    #[test]
+    fn clean_room_forbids_prior_implementation_code() {
+        let rev = ReviewerConfig::mock("r", 1);
+        let p = policy();
+        let req = ContextBuildRequest {
+            reviewer: &rev,
+            policy: &p,
+            task_category: TaskCategory::FeatureAddition,
+            task_text: Some("add flag"),
+            acceptance_criteria: Some("works"),
+            original_metrics: None,
+            source_or_diff: None,
+            verification_plan_summary: Some("cargo test"),
+            mode: ReviewerInvocationMode::CleanRoom,
+            failure_summary: Some("prior attempt exceeded containment"),
+            prior_implementation_code: Some("fn bloated() { /* huge */ }"),
+        };
+        let err = build_reviewer_context(&req).unwrap_err();
+        assert!(
+            err.to_string().contains("prior_implementation_code")
+                || err.to_string().contains("clean-room"),
+            "unexpected: {err}"
+        );
+    }
+
+    #[test]
+    fn clean_room_forbids_source_or_diff() {
+        let mut rev = ReviewerConfig::mock("r", 1);
+        rev.allow_source_egress = true;
+        let p = policy();
+        let req = ContextBuildRequest {
+            reviewer: &rev,
+            policy: &p,
+            task_category: TaskCategory::FeatureAddition,
+            task_text: Some("add flag"),
+            acceptance_criteria: None,
+            original_metrics: None,
+            source_or_diff: Some("diff --git a/x b/x"),
+            verification_plan_summary: None,
+            mode: ReviewerInvocationMode::CleanRoom,
+            failure_summary: Some("ooc"),
+            prior_implementation_code: None,
+        };
+        assert!(build_reviewer_context(&req).is_err());
+    }
+
+    #[test]
+    fn clean_room_package_has_no_prior_patch_content() {
+        let rev = ReviewerConfig::mock("r2", 2);
+        let p = policy();
+        let req = ContextBuildRequest {
+            reviewer: &rev,
+            policy: &p,
+            task_category: TaskCategory::FeatureAddition,
+            task_text: Some("minimal flag"),
+            acceptance_criteria: Some("cli --flag"),
+            original_metrics: None,
+            source_or_diff: None,
+            verification_plan_summary: Some("cargo test"),
+            mode: ReviewerInvocationMode::CleanRoom,
+            failure_summary: Some("stage1 still out of containment; hard limit new_files"),
+            prior_implementation_code: None,
+        };
+        let pkg = build_reviewer_context(&req).unwrap();
+        assert!(!pkg.includes_source);
+        assert!(pkg.system_prompt.contains("CLEAN-ROOM"));
+        assert!(pkg.user_prompt.contains("failure summary") || pkg.user_prompt.contains("Failure"));
+        assert!(!pkg.user_prompt.to_lowercase().contains("## source / diff"));
+        assert_clean_room_package(&pkg.system_prompt, &pkg.user_prompt, pkg.includes_source)
+            .unwrap();
     }
 
     #[test]

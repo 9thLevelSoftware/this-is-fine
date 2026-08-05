@@ -20,8 +20,9 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 pub use context::{
-    apply_file_tree_to_dir, build_reviewer_context, parse_reviewer_file_tree,
-    validate_relative_path, ContextBuildRequest, ReviewerContextPackage, ReviewerFileTreeOutput,
+    apply_file_tree_to_dir, assert_clean_room_package, build_reviewer_context,
+    parse_reviewer_file_tree, validate_relative_path, ContextBuildRequest, ReviewerContextPackage,
+    ReviewerFileTreeOutput, ReviewerInvocationMode,
 };
 
 /// Work package sent to an authorized reviewer backend.
@@ -869,6 +870,9 @@ mod tests {
             original_metrics: None,
             source_or_diff: None,
             verification_plan_summary: None,
+            mode: ReviewerInvocationMode::Standard,
+            failure_summary: None,
+            prior_implementation_code: None,
         })
         .unwrap();
         ReviewerTask {

@@ -51,6 +51,17 @@ impl ReviewerSelector {
 
     /// Select best authorized reviewer for the task. Never invents unauthorized models.
     pub fn select(&self, category: TaskCategory) -> Result<SelectedReviewer> {
+        self.select_excluding(category, &[])
+    }
+
+    /// Select best authorized reviewer excluding already-used ids (Five-Alarm Stage 2).
+    ///
+    /// Never invents unauthorized models. Returns error when no eligible reviewer remains.
+    pub fn select_excluding(
+        &self,
+        category: TaskCategory,
+        exclude_ids: &[String],
+    ) -> Result<SelectedReviewer> {
         if self.pool.is_empty() {
             return Err(TifError::UnauthorizedReviewer(
                 "no reviewers authorized in local configuration".into(),
@@ -61,16 +72,17 @@ impl ReviewerSelector {
             .pool
             .iter()
             .filter(|r| {
-                r.eligible_task_types.is_empty()
-                    || r.eligible_task_types
-                        .iter()
-                        .any(|t| t == category.as_str() || t == "*")
+                !exclude_ids.iter().any(|ex| ex == &r.id)
+                    && (r.eligible_task_types.is_empty()
+                        || r.eligible_task_types
+                            .iter()
+                            .any(|t| t == category.as_str() || t == "*"))
             })
             .collect();
 
         if eligible.is_empty() {
             return Err(TifError::UnauthorizedReviewer(format!(
-                "no authorized reviewer eligible for task {}",
+                "no authorized reviewer eligible for task {} (excluded: {exclude_ids:?})",
                 category.as_str()
             )));
         }
@@ -87,13 +99,30 @@ impl ReviewerSelector {
         });
 
         let best = ranked[0];
-        Ok(SelectedReviewer {
+        Ok(self.to_selected(best))
+    }
+
+    /// Look up a specific authorized reviewer by id (must be in the pool).
+    pub fn select_by_id(&self, id: &str) -> Result<SelectedReviewer> {
+        let cfg = self.pool.iter().find(|r| r.id == id).ok_or_else(|| {
+            TifError::UnauthorizedReviewer(format!("reviewer `{id}` is not in the authorized pool"))
+        })?;
+        Ok(self.to_selected(cfg))
+    }
+
+    fn to_selected(&self, best: &ReviewerConfig) -> SelectedReviewer {
+        SelectedReviewer {
             id: best.id.clone(),
             provider: best.provider.clone(),
             model: best.model.clone(),
             allow_source_egress: best.allow_source_egress,
             max_firebreak_attempts: best.max_firebreak_attempts,
-        })
+        }
+    }
+
+    /// Intensified attempt budget for Five-Alarm Stage 1 (higher than normal Firebreak).
+    pub fn intensified_attempts(selected: &SelectedReviewer) -> u32 {
+        selected.max_firebreak_attempts.saturating_mul(2).max(3)
     }
 
     fn success_rate(&self, id: &str) -> f64 {
@@ -158,5 +187,31 @@ mod tests {
         let s = ReviewerSelector::new(vec![r, rev("gen", 1)]);
         let sel = s.select(TaskCategory::BugFix).unwrap();
         assert_eq!(sel.id, "gen");
+    }
+
+    #[test]
+    fn select_excluding_picks_different_model() {
+        let s = ReviewerSelector::new(vec![rev("a", 10), rev("b", 5), rev("c", 1)]);
+        let first = s.select(TaskCategory::BugFix).unwrap();
+        assert_eq!(first.id, "a");
+        let second = s
+            .select_excluding(TaskCategory::BugFix, &[first.id.clone()])
+            .unwrap();
+        assert_eq!(second.id, "b");
+        let third = s
+            .select_excluding(TaskCategory::BugFix, &[first.id.clone(), second.id.clone()])
+            .unwrap();
+        assert_eq!(third.id, "c");
+        assert!(s
+            .select_excluding(TaskCategory::BugFix, &["a".into(), "b".into(), "c".into()])
+            .is_err());
+    }
+
+    #[test]
+    fn intensified_attempts_raise_budget() {
+        let s = ReviewerSelector::new(vec![rev("r", 1)]);
+        let sel = s.select(TaskCategory::BugFix).unwrap();
+        assert!(ReviewerSelector::intensified_attempts(&sel) >= 3);
+        assert!(ReviewerSelector::intensified_attempts(&sel) >= sel.max_firebreak_attempts);
     }
 }

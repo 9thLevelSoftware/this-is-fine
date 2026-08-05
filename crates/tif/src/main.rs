@@ -34,7 +34,7 @@ use tif_core::providers::{backend_for_provider, BackendRegistry};
 use tif_core::reviewer::ReviewerSelector;
 use tif_core::scoring::{CorrectnessFloor, DiffMetrics, SimplicityScorer};
 use tif_core::verify::{plan_and_run, VerificationPlanner};
-use tif_core::{AdaptationEngine, FiveAlarmPlan};
+use tif_core::{AdaptationEngine, FiveAlarmPlan, FiveAlarmRunOptions};
 
 fn main() -> ExitCode {
     match run() {
@@ -189,21 +189,31 @@ fn run() -> anyhow::Result<ExitCode> {
         }
         Commands::Inspect => cmd_inspect(&root, json),
         Commands::Status => cmd_status(&root, json),
-        Commands::FiveAlarm { plan } => {
+        Commands::FiveAlarm {
+            plan,
+            run: run_id,
+            apply,
+            historical_risk,
+        } => {
             if plan {
-                let plan = FiveAlarmPlan::staged_recovery();
-                emit(&plan, json, |p| {
+                let outline = FiveAlarmPlan::staged_recovery();
+                emit(&outline, json, |p| {
                     println!("Five-Alarm staged recovery:");
                     for (i, s) in p.steps.iter().enumerate() {
                         println!("  {}. {s}", i + 1);
                     }
+                    println!();
+                    println!("Escalate only after current containment failure:");
+                    println!("  tif five-alarm --run <run_id> [--apply]");
                 });
+                Ok(ExitCode::SUCCESS)
+            } else if let Some(id) = run_id {
+                cmd_five_alarm_run(&root, &id, apply, historical_risk, json)
             } else {
                 anyhow::bail!(
-                    "Five-Alarm cannot be selected for initial implementation; use after containment failure (see `tif five-alarm --plan`)"
+                    "Five-Alarm cannot be selected for initial implementation; use after containment failure (`tif five-alarm --plan` or `tif five-alarm --run <id>`)"
                 );
             }
-            Ok(ExitCode::SUCCESS)
         }
         Commands::Tui => match tui_app::run_tui(&root) {
             Ok(()) => Ok(ExitCode::SUCCESS),
@@ -891,6 +901,116 @@ fn cmd_approve(root: &Path, run_id: &str, json: bool) -> anyhow::Result<ExitCode
     }
 }
 
+fn cmd_five_alarm_run(
+    root: &Path,
+    run_id: &str,
+    apply: bool,
+    historical_risk: bool,
+    json: bool,
+) -> anyhow::Result<ExitCode> {
+    let cfg = load_config(root)?;
+    let paths = RepoPaths::for_root(root);
+    ensure_state_dirs(&paths)?;
+    let store = AuditStore::open(&paths, &cfg.audit)?;
+    let mut run = store
+        .get_run(run_id)?
+        .with_context(|| format!("run not found: {run_id}"))?;
+
+    // Legal entry: OOC, Restored (after failed firebreak), Contained (manual), or closed OOC.
+    if run.state == RunState::Closed {
+        let was_out = run
+            .assessment
+            .as_ref()
+            .is_some_and(|a| a.status == AssessmentStatus::OutOfControl);
+        if was_out {
+            run.state = RunState::OutOfControl;
+            run.events
+                .push("closed -> out_of_control (reopened for five-alarm)".into());
+        }
+    }
+    if !matches!(
+        run.state,
+        RunState::OutOfControl
+            | RunState::Restored
+            | RunState::Contained
+            | RunState::FirebreakRunning
+            | RunState::AwaitingApproval
+    ) {
+        return Ok(emit_err(
+            format!(
+                "cannot start Five-Alarm from state {} (expected out_of_control, restored, or contained after failure)",
+                run.state.as_str()
+            ),
+            json,
+        ));
+    }
+
+    let floor = run
+        .assessment
+        .as_ref()
+        .map(|a| a.correctness.clone())
+        .unwrap_or_else(CorrectnessFloor::all_pass);
+    if !floor.passes() {
+        return Ok(emit_err(
+            "correctness floor does not pass; Five-Alarm requires a verified (correct) but out-of-containment implementation",
+            json,
+        ));
+    }
+
+    let orch = RunOrchestrator::new();
+    store.record_run(&run)?;
+    let authorize = apply || cfg.approval.auto_apply_firebreak;
+    match orch.run_five_alarm(
+        &cfg,
+        &mut run,
+        &floor,
+        FiveAlarmRunOptions {
+            authorize_apply: authorize,
+            user_approved: apply,
+            historical_risk_noted: historical_risk,
+        },
+    ) {
+        Ok(result) => {
+            store.record_run(&run)?;
+            let _ = store.record_adaptation_from_run(&run);
+            Ok(emit_ok(
+                serde_json::json!({
+                    "run_id": run.id.as_str(),
+                    "state": run.state,
+                    "five_alarm": result.plan,
+                    "firebreak": result.firebreak,
+                    "isolation": run.isolation_session,
+                }),
+                json,
+                |_| {
+                    println!("Five-Alarm run {}", run.id);
+                    println!("stage: {}", result.plan.stage.as_str());
+                    println!("{}", result.plan.message);
+                    println!("applied: {}", result.plan.applied);
+                    println!("original_preserved: {}", result.plan.original_preserved);
+                    if !result.plan.timeline.is_empty() {
+                        println!("timeline:");
+                        for e in &result.plan.timeline {
+                            println!("  [{}] {}", e.stage.as_str(), e.message);
+                        }
+                    }
+                    if let Some(ref w) = result.plan.winner_id {
+                        println!("winner: {w}");
+                    }
+                    if run.state == RunState::AwaitingApproval {
+                        println!("approve: tif approve {}", run.id);
+                        println!("reject:  tif reject {}", run.id);
+                    }
+                },
+            ))
+        }
+        Err(e) => {
+            let _ = store.record_run(&run);
+            Ok(emit_err(e.to_string(), json))
+        }
+    }
+}
+
 fn cmd_reject(root: &Path, run_id: &str, json: bool) -> anyhow::Result<ExitCode> {
     let cfg = load_config(root)?;
     let paths = RepoPaths::for_root(root);
@@ -1230,20 +1350,19 @@ fn cmd_firebreak_invoke_backend(
     let floor = CorrectnessFloor::all_pass();
     let original_score = scorer.score(&metrics, &floor);
     let engine = FirebreakEngine::new(ReviewerSelector::new(cfg.reviewers.clone()));
-    let result = engine.generate_with_backend(BackendGenerateRequest {
-        run_id: format!("cli-{}", chrono_like_id()),
+    let mut gen_req = BackendGenerateRequest::standard(
+        format!("cli-{}", chrono_like_id()),
         policy,
-        source_root: root.to_path_buf(),
-        state_dir: paths.state_dir.clone(),
-        original_metrics: metrics,
+        root.to_path_buf(),
+        paths.state_dir.clone(),
+        metrics,
         original_score,
-        original_floor: floor,
-        task_text: task,
-        acceptance_criteria: None,
-        source_or_diff: None,
-        verification_plan_summary: Some("use repository verification plan after generation".into()),
-        max_output_bytes: 8_000_000,
-    })?;
+        floor,
+    );
+    gen_req.task_text = task;
+    gen_req.verification_plan_summary =
+        Some("use repository verification plan after generation".into());
+    let result = engine.generate_with_backend(gen_req)?;
 
     let data = serde_json::json!({
         "outcome": result.outcome,
@@ -1446,20 +1565,19 @@ fn cmd_reviewer_test(
     let scorer = SimplicityScorer::new(policy.weights.clone(), policy.limits.clone());
     let floor = CorrectnessFloor::all_pass();
     let score = scorer.score(&metrics, &floor);
-    let result = engine.generate_with_backend(BackendGenerateRequest {
-        run_id: "reviewer-test".into(),
+    let mut gen_req = BackendGenerateRequest::standard(
+        "reviewer-test",
         policy,
-        source_root: root.to_path_buf(),
-        state_dir: paths.state_dir.clone(),
-        original_metrics: metrics,
-        original_score: score,
-        original_floor: floor,
-        task_text: task.or_else(|| Some("offline reviewer test".into())),
-        acceptance_criteria: None,
-        source_or_diff: None,
-        verification_plan_summary: None,
-        max_output_bytes: 2_000_000,
-    })?;
+        root.to_path_buf(),
+        paths.state_dir.clone(),
+        metrics,
+        score,
+        floor,
+    );
+    gen_req.task_text = task.or_else(|| Some("offline reviewer test".into()));
+    gen_req.preferred_reviewer_id = Some(chosen.id.clone());
+    gen_req.max_output_bytes = 2_000_000;
+    let result = engine.generate_with_backend(gen_req)?;
 
     let data = serde_json::json!({
         "reviewer_id": chosen.id,
