@@ -336,6 +336,85 @@ impl AuditStore {
         )?;
         Ok(n as usize)
     }
+
+    /// Load local adaptation stats (empty when none recorded).
+    pub fn load_adaptation_stats(&self) -> Result<crate::adaptation::AdaptationStats> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT value FROM adaptation WHERE key='stats'")?;
+        let mut rows = stmt.query([])?;
+        if let Some(row) = rows.next()? {
+            let value: String = row.get(0)?;
+            let stats = serde_json::from_str(&value).unwrap_or_default();
+            return Ok(stats);
+        }
+        Ok(crate::adaptation::AdaptationStats::default())
+    }
+
+    /// Persist local adaptation stats.
+    pub fn save_adaptation_stats(&self, stats: &crate::adaptation::AdaptationStats) -> Result<()> {
+        let value = serde_json::to_string(stats)?;
+        self.conn.execute(
+            "INSERT INTO adaptation (key, value) VALUES ('stats', ?1)
+             ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            params![value],
+        )?;
+        Ok(())
+    }
+
+    /// Record adaptation outcome from a finished run.
+    pub fn record_adaptation_from_run(&self, run: &RunRecord) -> Result<()> {
+        let mut eng = crate::adaptation::AdaptationEngine::load(self.load_adaptation_stats()?);
+        let policy = run.policy.as_ref();
+        let fb = run.firebreak.as_ref();
+        let contained = matches!(run.state, RunState::Contained | RunState::Applied)
+            || run
+                .assessment
+                .as_ref()
+                .is_some_and(|a| a.status == crate::assess::AssessmentStatus::Contained);
+        let out_of_control = run
+            .assessment
+            .as_ref()
+            .is_some_and(|a| a.status == crate::assess::AssessmentStatus::OutOfControl)
+            || run.state == RunState::OutOfControl
+            || run.state == RunState::AwaitingApproval;
+        let firebreak =
+            fb.map(|f| f.applied || (f.success && f.candidate_ready && !f.requires_approval));
+        // Applied success counts as firebreak success; explicit fail/not-ready as fail.
+        let firebreak = match (fb, firebreak) {
+            (Some(f), _) if f.applied => Some(true),
+            (Some(f), _) if f.requires_approval && f.candidate_ready => None, // pending
+            (Some(f), _) if !f.success || (!f.applied && !f.candidate_ready) => Some(false),
+            (Some(_), Some(v)) => Some(v),
+            _ => None,
+        };
+        let outcome = crate::adaptation::RunOutcome {
+            contained,
+            out_of_control,
+            firebreak,
+            rolled_back: run.state == RunState::Restored
+                && run.isolation_session.as_ref().is_some_and(|s| !s.applied)
+                && run.events.iter().any(|e| e.contains("rollback")),
+            category: policy
+                .map(|p| p.task_category)
+                .unwrap_or(crate::task::TaskCategory::Unknown),
+            fire_level: policy
+                .map(|p| p.fire_level)
+                .unwrap_or(crate::fire_level::FireLevel::Containment),
+            simplicity_score: run.score.as_ref().map(|s| s.score).unwrap_or(0.0),
+            verification_passed: run
+                .verification
+                .as_ref()
+                .map(|v| v.satisfies_correctness_verification())
+                .unwrap_or(false),
+            pressure_template_id: policy
+                .map(|p| p.pressure.template_id.as_str())
+                .unwrap_or("unknown"),
+            reviewer_id: fb.and_then(|f| f.reviewer_id.as_deref()),
+        };
+        eng.record_run(outcome);
+        self.save_adaptation_stats(eng.stats())
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -46,11 +46,12 @@ pub use firebreak::{
 pub use inspector::{find_repo_root, RepositoryInspector};
 pub use isolation::{
     apply_verified_candidate, gc_expired_isolation, isolator_for_session, open_isolation,
-    rollback_applied_candidate, select_isolator, GitWorktreeIsolator, IsolationKind,
-    IsolationSession, Isolator, SnapshotIsolator,
+    rollback_applied_candidate, select_isolator, session_candidate_root, GitWorktreeIsolator,
+    IsolationKind, IsolationSession, Isolator, SnapshotIsolator,
 };
 pub use orchestrator::{
-    BeginRunRequest, IsolatedFirebreakParams, RunId, RunOrchestrator, RunRecord, RunState,
+    BeginRunRequest, FirebreakAutoOptions, IsolatedFirebreakParams, RunId, RunOrchestrator,
+    RunRecord, RunState,
 };
 pub use policy::{ContainmentPolicy, PolicyCompileRequest, PolicyCompiler};
 pub use pressure::{PressureEngine, PressureScenario, BASELINE_CONTAINMENT_PROMPT};

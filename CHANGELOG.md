@@ -9,6 +9,14 @@ Versioning: see [docs/VERSIONING.md](docs/VERSIONING.md).
 
 ### Added
 
+- **Phase 2 automatic isolated Firebreak closed loop**
+  - `RunOrchestrator::run_firebreak_auto`: authorized backend → re-verify → absolute/git ranking → apply or approval queue
+  - Auto-apply when `approval.auto_apply_firebreak` (default `true`) and path is non-sensitive
+  - Approval queue: `AwaitingApproval` + optional `approval_ttl_hours`; CLI `tif approve` / `tif reject`
+  - CLI: `tif firebreak --auto` (same closed loop as `tif run complete --auto-firebreak`)
+  - Isolation apply prefers `session.candidate_path` (reviewer output); skips `.tif-candidate` on overlay
+  - Adaptation outcomes persisted in local SQLite (`tif adaptation`)
+  - Fail-safe: failed backend, larger candidate, failed re-verify, and approval-required paths never apply
 - **Phase 1 reviewer execution plane**
   - `ReviewerBackend` trait with mock, OpenAI-compatible HTTP, Anthropic, and process backends
   - Credential resolution (`env:VAR` / `file:PATH`)

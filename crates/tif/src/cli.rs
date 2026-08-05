@@ -81,10 +81,18 @@ pub enum Commands {
         /// Invoke authorized reviewer backend in isolation (no apply; Phase 1).
         #[arg(long)]
         invoke_backend: bool,
+        /// Automatic closed loop: backend → re-verify → rank → apply if allowed.
+        /// Same path as `tif run complete --auto-firebreak` when reviewers are configured.
+        #[arg(long)]
+        auto: bool,
         /// Optional task text for backend context.
         #[arg(long)]
         task: Option<String>,
     },
+    /// Approve a pending Firebreak candidate (`AwaitingApproval`) and apply.
+    Approve { run_id: String },
+    /// Reject a pending Firebreak candidate; original workspace is retained.
+    Reject { run_id: String },
     /// Get or set Fire Level (1–4 initial; 5 is escalation-only).
     #[command(name = "fire-level")]
     FireLevel {

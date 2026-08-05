@@ -244,11 +244,24 @@ pub mod mock {
         }
 
         fn complete(&self, task: &ReviewerTask) -> Result<ReviewerPatch> {
+            // Test hook: force backend failure (source untouched).
+            if task.isolation_root.join("TIF_MOCK_FAIL").is_file() {
+                return Err(TifError::Other(
+                    "mock backend forced failure (TIF_MOCK_FAIL present)".into(),
+                ));
+            }
+
             let candidate = ensure_candidate_seeded(&task.isolation_root)?;
-            // Optional reduction: delete marker file if present.
+            // Optional reduction: delete marker file if present (can be a large bloat file).
             let marker = candidate.join("TIF_MOCK_REDUCE");
             if marker.is_file() {
                 let _ = fs::remove_file(&marker);
+            }
+            // Optional inflation for "larger candidate" tests.
+            let inflate = task.isolation_root.join("TIF_MOCK_INFLATE");
+            if inflate.is_file() {
+                let body = fs::read_to_string(&inflate).unwrap_or_else(|_| "INFLATE\n".into());
+                let _ = fs::write(candidate.join("TIF_MOCK_BLOAT.txt"), body.repeat(32));
             }
             // Also honor a JSON file tree if present at isolation root.
             let scripted = task.isolation_root.join("TIF_MOCK_OUTPUT.json");

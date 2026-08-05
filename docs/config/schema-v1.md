@@ -72,6 +72,8 @@ Hard caps (`null` / omitted = no cap). Partial local tables **merge field-wise**
 | `sensitive_paths` | string[] | `[]` | Globs requiring Firebreak approval |
 | `sensitive_task_classes` | string[] | `[]` | Task categories requiring approval |
 | `require_firebreak_approval` | bool | `false` | Always require approval for apply |
+| `auto_apply_firebreak` | bool | **`true`** | Auto-apply non-sensitive candidates after re-verify + ranking |
+| `approval_ttl_hours` | u32? | | Optional hours until pending approval expires |
 
 ## `[audit]`
 

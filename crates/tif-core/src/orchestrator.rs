@@ -1,19 +1,26 @@
 //! Run orchestrator and state machine with stable run IDs.
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
 use uuid::Uuid;
 
 use crate::assess::{AssessmentStatus, DamageAssessment, DamageAssessor};
-use crate::config::Config;
+use crate::config::{Config, RepoPaths};
+use crate::diff::metrics_from_tree_absolute;
 use crate::error::{Result, TifError};
 use crate::fire_level::FireLevel;
-use crate::firebreak::{FirebreakEngine, FirebreakOutcome, FirebreakRequest};
-use crate::isolation::IsolationSession;
+use crate::firebreak::{
+    candidate_floor_from_verification, BackendGenerateRequest, FirebreakEngine, FirebreakOutcome,
+    FirebreakRequest,
+};
+use crate::inspector::RepositoryInspector;
+use crate::isolation::{isolator_for_session, session_candidate_root, IsolationSession};
 use crate::policy::{ContainmentPolicy, PolicyCompileRequest, PolicyCompiler};
+use crate::providers::{backend_for_provider, BackendRegistry};
 use crate::reviewer::ReviewerSelector;
 use crate::scoring::{CorrectnessFloor, DiffMetrics, ScoreResult, SimplicityScorer};
-use crate::verify::VerificationReport;
+use crate::verify::{plan_and_run, VerificationReport};
 
 /// Stable local run identifier.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -157,6 +164,9 @@ pub struct RunRecord {
     /// Isolation session for Firebreak apply/rollback (filesystem-backed).
     #[serde(default)]
     pub isolation_session: Option<IsolationSession>,
+    /// When set, pending Firebreak approval expires at this time (UTC).
+    #[serde(default)]
+    pub approval_expires_at: Option<DateTime<Utc>>,
     pub error: Option<String>,
     pub events: Vec<String>,
 }
@@ -181,6 +191,7 @@ impl RunRecord {
             firebreak: None,
             rollback_candidate_id: None,
             isolation_session: None,
+            approval_expires_at: None,
             error: None,
             events: vec!["run created".into()],
         }
@@ -383,13 +394,33 @@ impl RunOrchestrator {
 
     /// Run Firebreak against an out-of-control but correct implementation.
     ///
-    /// Production path is fail-closed (no reviewer backend). For real apply, use
-    /// `run_firebreak_isolated` after staging a re-verified candidate tree.
+    /// When authorized reviewers with compiled backends are configured, runs the
+    /// automatic isolated closed loop: backend → re-verify → rank → optional apply.
+    /// Without backends, remains fail-closed (original retained).
     pub fn run_firebreak(
         &self,
         config: &Config,
         run: &mut RunRecord,
         original_floor: &CorrectnessFloor,
+    ) -> Result<()> {
+        self.run_firebreak_auto(
+            config,
+            run,
+            original_floor,
+            FirebreakAutoOptions {
+                authorize_apply: config.approval.auto_apply_firebreak,
+                user_approved: false,
+            },
+        )
+    }
+
+    /// Automatic isolated Firebreak closed loop (Phase 2).
+    pub fn run_firebreak_auto(
+        &self,
+        config: &Config,
+        run: &mut RunRecord,
+        original_floor: &CorrectnessFloor,
+        options: FirebreakAutoOptions,
     ) -> Result<()> {
         if run.state != RunState::FirebreakRunning {
             run.transition(RunState::FirebreakRunning)?;
@@ -405,20 +436,305 @@ impl RunOrchestrator {
             .clone()
             .ok_or_else(|| TifError::Other("run missing score".into()))?;
 
+        if !self.has_usable_reviewer_backend(config) {
+            let selector = ReviewerSelector::new(config.reviewers.clone());
+            let engine = FirebreakEngine::new(selector);
+            let outcome = engine.simplify(FirebreakRequest {
+                run_id: run.id.as_str().to_string(),
+                policy,
+                original_metrics: metrics,
+                original_score,
+                original_floor: original_floor.clone(),
+                simulate_success: false,
+                workspace_apply_authorized: false,
+            })?;
+            return self.finalize_firebreak(config, run, outcome);
+        }
+
+        let source_root = PathBuf::from(&run.repo_root);
+        if !source_root.exists() {
+            let outcome = FirebreakOutcome {
+                success: false,
+                applied: false,
+                candidate_ready: false,
+                requires_approval: false,
+                simulated: false,
+                reviewer_id: None,
+                candidate_id: None,
+                candidate_score: None,
+                candidate_metrics: None,
+                message: format!(
+                    "Firebreak closed loop aborted: repo root missing ({})",
+                    source_root.display()
+                ),
+                original_preserved: true,
+                isolation_session_id: None,
+            };
+            return self.finalize_firebreak(config, run, outcome);
+        }
+
+        let paths = RepoPaths::for_root(&source_root);
+        crate::config::ensure_state_dirs(&paths)?;
+
         let selector = ReviewerSelector::new(config.reviewers.clone());
         let engine = FirebreakEngine::new(selector);
-        // Production: fail-closed. Simulation is for unit tests only via FirebreakEngine directly.
-        let outcome = engine.simplify(FirebreakRequest {
+
+        let plan_summary = run
+            .verification
+            .as_ref()
+            .map(|v| {
+                format!(
+                    "required_passed={} incomplete={} checks={}",
+                    v.all_required_passed,
+                    v.incomplete_plan,
+                    v.checks.len()
+                )
+            })
+            .or_else(|| Some("use repository verification plan after generation".into()));
+
+        let gen = engine.generate_with_backend(BackendGenerateRequest {
             run_id: run.id.as_str().to_string(),
-            policy,
+            policy: policy.clone(),
+            source_root: source_root.clone(),
+            state_dir: paths.state_dir.clone(),
             original_metrics: metrics,
-            original_score,
+            original_score: original_score.clone(),
             original_floor: original_floor.clone(),
-            simulate_success: false,
-            workspace_apply_authorized: false,
+            task_text: run.task_text.clone(),
+            acceptance_criteria: None,
+            source_or_diff: None,
+            verification_plan_summary: plan_summary,
+            max_output_bytes: 8_000_000,
         })?;
 
-        self.finalize_firebreak(run, outcome)
+        // Attach session early (before re-verify / apply) for crash recovery.
+        run.isolation_session = Some(gen.session.clone());
+        run.events
+            .push(format!("firebreak backend: {}", gen.outcome.message));
+
+        if !gen.outcome.success || gen.patch.is_none() {
+            return self.finalize_firebreak(config, run, gen.outcome);
+        }
+
+        let patch = gen.patch.unwrap();
+        let mut session = gen.session;
+        session.candidate_path = Some(patch.candidate_root.clone());
+        run.isolation_session = Some(session.clone());
+
+        // Re-verify candidate tree with the same verification plan (never lower the floor).
+        let verify_root = session_candidate_root(&session).to_path_buf();
+        let inspection = RepositoryInspector::new()
+            .inspect(&verify_root)
+            .map_err(|e| {
+                TifError::Other(format!(
+                    "failed to inspect firebreak candidate {}: {e}",
+                    verify_root.display()
+                ))
+            })?;
+        let report =
+            match plan_and_run(&verify_root, &config.verification, Some(&inspection), false) {
+                Ok(r) => {
+                    if r.incomplete_plan {
+                        run.events.push(
+                            "firebreak re-verify: plan incomplete (no required checks ran)".into(),
+                        );
+                    }
+                    r
+                }
+                Err(e) => {
+                    run.events
+                        .push(format!("firebreak re-verify plan_and_run failed: {e}"));
+                    let mut outcome = gen.outcome;
+                    outcome.success = false;
+                    outcome.candidate_ready = false;
+                    outcome.message = format!("re-verify failed; original retained: {e}");
+                    outcome.original_preserved = true;
+                    outcome.applied = false;
+                    return self.finalize_firebreak(config, run, outcome);
+                }
+            };
+
+        let candidate_floor = candidate_floor_from_verification(&report);
+        run.events.push(format!(
+            "firebreak re-verify: required_passed={} incomplete={}",
+            report.all_required_passed, report.incomplete_plan
+        ));
+
+        // Rank with absolute tree metrics on both sides (same measurement kind).
+        let ranking_original_metrics = metrics_from_tree_absolute(&source_root)?;
+        let candidate_metrics = metrics_from_tree_absolute(&verify_root)?;
+        let scorer = SimplicityScorer::new(policy.weights.clone(), policy.limits.clone());
+        let ranking_original_score = scorer.score(&ranking_original_metrics, original_floor);
+
+        let isolator = isolator_for_session(&session, &paths.snapshots_dir());
+        self.run_firebreak_isolated(
+            config,
+            run,
+            IsolatedFirebreakParams {
+                original_floor,
+                isolator: isolator.as_ref(),
+                session: &mut session,
+                candidate_metrics,
+                candidate_floor,
+                authorize_apply: options.authorize_apply,
+                ranking_original_metrics: Some(ranking_original_metrics),
+                ranking_original_score: Some(ranking_original_score),
+                user_approved: options.user_approved,
+            },
+        )
+    }
+
+    fn has_usable_reviewer_backend(&self, config: &Config) -> bool {
+        if config.reviewers.is_empty() {
+            return false;
+        }
+        let registry = BackendRegistry::new();
+        config
+            .reviewers
+            .iter()
+            .any(|r| backend_for_provider(&registry, &r.provider).is_ok())
+    }
+
+    /// Approve a pending Firebreak candidate and apply after re-check.
+    pub fn approve_firebreak(&self, config: &Config, run: &mut RunRecord) -> Result<()> {
+        if run.state != RunState::AwaitingApproval {
+            return Err(TifError::InvalidTransition {
+                from: run.state.as_str().into(),
+                to: "approve".into(),
+            });
+        }
+        if let Some(exp) = run.approval_expires_at {
+            if Utc::now() > exp {
+                run.events
+                    .push("approval expired; rejecting pending firebreak".into());
+                return self.reject_firebreak(run, Some("approval expired".into()));
+            }
+        }
+
+        let Some(mut session) = run.isolation_session.clone() else {
+            return Err(TifError::Isolation(
+                "no isolation session on run; cannot approve firebreak".into(),
+            ));
+        };
+        let floor = run
+            .assessment
+            .as_ref()
+            .map(|a| a.correctness.clone())
+            .unwrap_or_else(CorrectnessFloor::all_pass);
+        if !floor.passes() {
+            return Err(TifError::CorrectnessFloor(
+                "original correctness floor no longer passes; refuse approve".into(),
+            ));
+        }
+
+        let source_root = PathBuf::from(&run.repo_root);
+        let paths = RepoPaths::for_root(&source_root);
+        let verify_root = session_candidate_root(&session).to_path_buf();
+        let inspection = RepositoryInspector::new().inspect(&verify_root)?;
+        let report = plan_and_run(&verify_root, &config.verification, Some(&inspection), false)?;
+        let candidate_floor = candidate_floor_from_verification(&report);
+        if !candidate_floor.passes() {
+            run.events
+                .push("approve: candidate failed re-verify; not applying".into());
+            return self.reject_firebreak(
+                run,
+                Some("candidate failed re-verify at approve time".into()),
+            );
+        }
+
+        let policy = run
+            .policy
+            .clone()
+            .ok_or_else(|| TifError::Other("run missing policy".into()))?;
+        let ranking_original_metrics = metrics_from_tree_absolute(&source_root)?;
+        let candidate_metrics = metrics_from_tree_absolute(&verify_root)?;
+        let scorer = SimplicityScorer::new(policy.weights.clone(), policy.limits.clone());
+        let ranking_original_score = scorer.score(&ranking_original_metrics, &floor);
+
+        // Move AwaitingApproval → FirebreakRunning for isolated apply transitions.
+        run.state = RunState::FirebreakRunning;
+        run.updated_at = Utc::now();
+        run.events
+            .push("awaiting_approval -> firebreak_running (approve)".into());
+        run.approval_expires_at = None;
+
+        let isolator = isolator_for_session(&session, &paths.snapshots_dir());
+        self.run_firebreak_isolated(
+            config,
+            run,
+            IsolatedFirebreakParams {
+                original_floor: &floor,
+                isolator: isolator.as_ref(),
+                session: &mut session,
+                candidate_metrics,
+                candidate_floor,
+                authorize_apply: true,
+                ranking_original_metrics: Some(ranking_original_metrics),
+                ranking_original_score: Some(ranking_original_score),
+                user_approved: true,
+            },
+        )
+    }
+
+    /// Reject a pending Firebreak candidate (original preserved).
+    pub fn reject_firebreak(&self, run: &mut RunRecord, reason: Option<String>) -> Result<()> {
+        if !matches!(
+            run.state,
+            RunState::AwaitingApproval | RunState::FirebreakRunning | RunState::CandidateComparing
+        ) {
+            return Err(TifError::InvalidTransition {
+                from: run.state.as_str().into(),
+                to: "reject".into(),
+            });
+        }
+        let msg = reason.unwrap_or_else(|| "operator rejected firebreak candidate".into());
+        run.events.push(format!("firebreak rejected: {msg}"));
+        run.approval_expires_at = None;
+        run.firebreak = Some(FirebreakOutcome {
+            success: true,
+            applied: false,
+            candidate_ready: false,
+            requires_approval: false,
+            simulated: false,
+            reviewer_id: run.firebreak.as_ref().and_then(|f| f.reviewer_id.clone()),
+            candidate_id: run.firebreak.as_ref().and_then(|f| f.candidate_id.clone()),
+            candidate_score: run
+                .firebreak
+                .as_ref()
+                .and_then(|f| f.candidate_score.clone()),
+            candidate_metrics: run
+                .firebreak
+                .as_ref()
+                .and_then(|f| f.candidate_metrics.clone()),
+            message: format!("Firebreak rejected; original retained ({msg})"),
+            original_preserved: true,
+            isolation_session_id: run.isolation_session.as_ref().map(|s| s.id.clone()),
+        });
+        run.rollback_candidate_id = Some("original".into());
+        if run.state == RunState::AwaitingApproval
+            || run.state == RunState::FirebreakRunning
+            || run.state == RunState::CandidateComparing
+        {
+            // Prefer legal transition when possible.
+            if run.state == RunState::AwaitingApproval {
+                let _ = run.transition(RunState::Restored);
+            } else if run.state == RunState::FirebreakRunning {
+                let _ = run.transition(RunState::CandidateComparing);
+                let _ = run.transition(RunState::Restored);
+            } else {
+                let _ = run.transition(RunState::Restored);
+            }
+        }
+        if run.state != RunState::Restored {
+            run.state = RunState::Restored;
+            run.updated_at = Utc::now();
+        }
+        if let Some(ref mut a) = run.assessment {
+            a.rollback_available = false;
+            a.summary = format!("Firebreak rejected · {msg}");
+            a.status = AssessmentStatus::OutOfControl;
+        }
+        Ok(())
     }
 
     /// Run Firebreak with a re-verified isolated candidate and optional apply.
@@ -464,6 +780,7 @@ impl RunOrchestrator {
                 candidate_floor: params.candidate_floor,
                 authorize_apply: params.authorize_apply,
                 force_approval: false,
+                user_approved: params.user_approved,
             },
             params.isolator,
             params.session,
@@ -473,7 +790,7 @@ impl RunOrchestrator {
         run.isolation_session = Some(params.session.clone());
 
         match apply_result {
-            Ok(outcome) => self.finalize_firebreak(run, outcome),
+            Ok(outcome) => self.finalize_firebreak(config, run, outcome),
             Err(e) => {
                 run.events
                     .push(format!("isolated firebreak apply error: {e}"));
@@ -487,12 +804,21 @@ impl RunOrchestrator {
         }
     }
 
-    fn finalize_firebreak(&self, run: &mut RunRecord, outcome: FirebreakOutcome) -> Result<()> {
+    fn finalize_firebreak(
+        &self,
+        config: &Config,
+        run: &mut RunRecord,
+        outcome: FirebreakOutcome,
+    ) -> Result<()> {
         run.firebreak = Some(outcome.clone());
         run.transition(RunState::CandidateComparing)?;
 
         if outcome.requires_approval && outcome.candidate_ready {
             run.transition(RunState::AwaitingApproval)?;
+            run.approval_expires_at = config
+                .approval
+                .approval_ttl_hours
+                .map(|h| Utc::now() + Duration::hours(i64::from(h).max(1)));
             if let Some(ref mut a) = run.assessment {
                 a.status = AssessmentStatus::FirebreakPending;
                 a.reviewer_id = outcome.reviewer_id.clone();
@@ -617,6 +943,26 @@ pub struct IsolatedFirebreakParams<'a> {
     /// ranking so both sides use the same measurement kind (e.g. absolute tree weight).
     pub ranking_original_metrics: Option<DiffMetrics>,
     pub ranking_original_score: Option<ScoreResult>,
+    /// Operator already approved (`tif approve`).
+    pub user_approved: bool,
+}
+
+/// Options for the automatic Firebreak closed loop.
+#[derive(Debug, Clone)]
+pub struct FirebreakAutoOptions {
+    /// Apply when candidate is ready and does not require approval.
+    pub authorize_apply: bool,
+    /// Operator already approved (skips approval gate).
+    pub user_approved: bool,
+}
+
+impl Default for FirebreakAutoOptions {
+    fn default() -> Self {
+        Self {
+            authorize_apply: true,
+            user_approved: false,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -788,5 +1134,286 @@ mod tests {
             RunState::Contained,
             RunState::FirebreakRunning
         ));
+    }
+
+    /// Phase 2 helpers: temp repo with mock reviewer + always-pass verification.
+    #[cfg(feature = "provider-mock")]
+    mod phase2 {
+        use super::*;
+        use crate::config::{
+            ensure_state_dirs, ApprovalConfig, ReviewerConfig, SimplicityConfig, SimplicityLimits,
+            VerificationConfig,
+        };
+        use crate::isolation::isolator_for_session;
+        use std::fs;
+        use tempfile::tempdir;
+
+        fn phase2_cfg(require_approval: bool) -> Config {
+            Config {
+                verification: VerificationConfig {
+                    commands: vec!["echo tif-ok".into()],
+                    discover: false,
+                },
+                simplicity: SimplicityConfig {
+                    limits: SimplicityLimits {
+                        new_runtime_dependencies: Some(0),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+                approval: ApprovalConfig {
+                    require_firebreak_approval: require_approval,
+                    auto_apply_firebreak: true,
+                    approval_ttl_hours: Some(24),
+                    ..Default::default()
+                },
+                reviewers: vec![ReviewerConfig::mock("phase2-mock", 100)],
+                ..Default::default()
+            }
+        }
+
+        fn plant_repo(root: &std::path::Path, reduce_bytes: usize, fail: bool, inflate: bool) {
+            fs::create_dir_all(root.join("src")).unwrap();
+            fs::write(root.join("src/lib.rs"), b"pub fn f() -> i32 { 1 }\n").unwrap();
+            if reduce_bytes > 0 {
+                fs::write(root.join("TIF_MOCK_REDUCE"), vec![b'X'; reduce_bytes]).unwrap();
+            }
+            if fail {
+                fs::write(root.join("TIF_MOCK_FAIL"), b"1").unwrap();
+            }
+            if inflate {
+                // Inflate body is repeated 32x by the mock backend.
+                fs::write(root.join("TIF_MOCK_INFLATE"), "BLOAT_LINE\n".repeat(200)).unwrap();
+            }
+            let paths = crate::config::RepoPaths::for_root(root);
+            ensure_state_dirs(&paths).unwrap();
+        }
+
+        fn ooc_metrics() -> DiffMetrics {
+            DiffMetrics {
+                runtime_dependencies_added: 1,
+                lines_added: 80,
+                files_added: 2,
+                ..Default::default()
+            }
+        }
+
+        #[test]
+        fn e2e_mock_oversized_generate_reverify_apply_rollback() {
+            let dir = tempdir().unwrap();
+            let root = dir.path().join("repo");
+            plant_repo(&root, 50_000, false, false);
+            let keep = root.join("KEEP.txt");
+            fs::write(&keep, b"original-keep").unwrap();
+
+            let cfg = phase2_cfg(false);
+            let orch = RunOrchestrator::new();
+            let mut run = orch
+                .begin(
+                    &cfg,
+                    root.to_str().unwrap(),
+                    BeginRunRequest {
+                        task_text: Some("shrink feature".into()),
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+
+            orch.complete(
+                &cfg,
+                &mut run,
+                ooc_metrics(),
+                pass_report(),
+                CorrectnessFloor::all_pass(),
+                true, // auto firebreak closed loop
+            )
+            .unwrap();
+
+            assert!(
+                run.firebreak.as_ref().is_some_and(|f| f.applied),
+                "expected apply, got: {:?}",
+                run.firebreak
+            );
+            assert_eq!(run.state, RunState::Applied);
+            assert!(!root.join("TIF_MOCK_REDUCE").exists());
+            assert_eq!(fs::read_to_string(&keep).unwrap(), "original-keep");
+
+            // Rollback restores bloat marker from baseline.
+            let paths = crate::config::RepoPaths::for_root(&root);
+            let session = run.isolation_session.clone().expect("session");
+            let isolator = isolator_for_session(&session, &paths.snapshots_dir());
+            orch.rollback_isolation(&mut run, isolator.as_ref())
+                .unwrap();
+            assert_eq!(run.state, RunState::Restored);
+            assert!(root.join("TIF_MOCK_REDUCE").exists());
+            assert_eq!(fs::read_to_string(&keep).unwrap(), "original-keep");
+        }
+
+        #[test]
+        fn failed_backend_preserves_source() {
+            let dir = tempdir().unwrap();
+            let root = dir.path().join("repo");
+            plant_repo(&root, 10_000, true, false);
+            fs::write(root.join("src/lib.rs"), b"pub fn f() -> i32 { 42 }\n").unwrap();
+
+            let cfg = phase2_cfg(false);
+            let orch = RunOrchestrator::new();
+            let mut run = orch
+                .begin(
+                    &cfg,
+                    root.to_str().unwrap(),
+                    BeginRunRequest {
+                        task_text: Some("fail path".into()),
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+
+            orch.complete(
+                &cfg,
+                &mut run,
+                ooc_metrics(),
+                pass_report(),
+                CorrectnessFloor::all_pass(),
+                true,
+            )
+            .unwrap();
+
+            assert!(!run.firebreak.as_ref().unwrap().applied);
+            assert!(run.firebreak.as_ref().unwrap().original_preserved);
+            assert_eq!(run.state, RunState::Restored);
+            assert_eq!(
+                fs::read_to_string(root.join("src/lib.rs")).unwrap(),
+                "pub fn f() -> i32 { 42 }\n"
+            );
+            assert!(root.join("TIF_MOCK_REDUCE").exists());
+        }
+
+        #[test]
+        fn larger_candidate_not_applied() {
+            let dir = tempdir().unwrap();
+            let root = dir.path().join("repo");
+            // No REDUCE delete; INFLATE adds a large file → larger candidate.
+            plant_repo(&root, 0, false, true);
+            fs::write(root.join("src/lib.rs"), b"pub fn f() {}\n").unwrap();
+
+            let cfg = phase2_cfg(false);
+            let orch = RunOrchestrator::new();
+            let mut run = orch
+                .begin(
+                    &cfg,
+                    root.to_str().unwrap(),
+                    BeginRunRequest {
+                        task_text: Some("inflate path".into()),
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+
+            orch.complete(
+                &cfg,
+                &mut run,
+                ooc_metrics(),
+                pass_report(),
+                CorrectnessFloor::all_pass(),
+                true,
+            )
+            .unwrap();
+
+            let fb = run.firebreak.as_ref().unwrap();
+            assert!(
+                !fb.applied,
+                "larger candidate must not apply: {}",
+                fb.message
+            );
+            assert!(fb.original_preserved);
+            assert!(!root.join("TIF_MOCK_BLOAT.txt").exists());
+            assert_eq!(run.state, RunState::Restored);
+        }
+
+        #[test]
+        fn approval_required_does_not_auto_apply() {
+            let dir = tempdir().unwrap();
+            let root = dir.path().join("repo");
+            plant_repo(&root, 40_000, false, false);
+
+            let cfg = phase2_cfg(true);
+            let orch = RunOrchestrator::new();
+            let mut run = orch
+                .begin(
+                    &cfg,
+                    root.to_str().unwrap(),
+                    BeginRunRequest {
+                        task_text: Some("needs approval".into()),
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+
+            orch.complete(
+                &cfg,
+                &mut run,
+                ooc_metrics(),
+                pass_report(),
+                CorrectnessFloor::all_pass(),
+                true,
+            )
+            .unwrap();
+
+            let fb = run.firebreak.as_ref().unwrap();
+            assert!(fb.candidate_ready);
+            assert!(fb.requires_approval);
+            assert!(!fb.applied);
+            assert!(fb.original_preserved);
+            assert_eq!(run.state, RunState::AwaitingApproval);
+            assert!(run.approval_expires_at.is_some());
+            assert!(root.join("TIF_MOCK_REDUCE").exists());
+
+            // Reject path leaves source intact.
+            orch.reject_firebreak(&mut run, Some("nope".into()))
+                .unwrap();
+            assert_eq!(run.state, RunState::Restored);
+            assert!(root.join("TIF_MOCK_REDUCE").exists());
+        }
+
+        #[test]
+        fn approve_applies_pending_candidate() {
+            let dir = tempdir().unwrap();
+            let root = dir.path().join("repo");
+            plant_repo(&root, 40_000, false, false);
+
+            let cfg = phase2_cfg(true);
+            let orch = RunOrchestrator::new();
+            let mut run = orch
+                .begin(
+                    &cfg,
+                    root.to_str().unwrap(),
+                    BeginRunRequest {
+                        task_text: Some("approve me".into()),
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+
+            orch.complete(
+                &cfg,
+                &mut run,
+                ooc_metrics(),
+                pass_report(),
+                CorrectnessFloor::all_pass(),
+                true,
+            )
+            .unwrap();
+            assert_eq!(run.state, RunState::AwaitingApproval);
+
+            orch.approve_firebreak(&cfg, &mut run).unwrap();
+            assert!(
+                run.firebreak.as_ref().is_some_and(|f| f.applied),
+                "approve should apply: {:?}",
+                run.firebreak
+            );
+            assert_eq!(run.state, RunState::Applied);
+            assert!(!root.join("TIF_MOCK_REDUCE").exists());
+        }
     }
 }
