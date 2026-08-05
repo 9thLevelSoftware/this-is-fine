@@ -2,6 +2,8 @@
 
 **Purpose:** Satisfy Must **F5** (and optionally **P1-4**, **P1-7**) by exercising one first-class adapter **inside a real agent product** on **Windows and Unix**.
 
+**AI agents:** executable task map, honesty rules, and end-to-end prompt: [AGENT_Q4_F5_PLAYBOOK.md](AGENT_Q4_F5_PLAYBOOK.md) (`T-F5`).
+
 Protocol/install smoke (**B12**, **F5-smoke**) is **not** enough for F5 Pass.
 
 ## Choose one agent

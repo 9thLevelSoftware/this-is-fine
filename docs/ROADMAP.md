@@ -43,6 +43,7 @@ Canonical design: [`docs/superpowers/specs/2026-08-04-this-is-fine-design.md`](s
 | [adapters/VERSION_MATRIX.md](adapters/VERSION_MATRIX.md) | Adapter × OS × protocol matrix |
 | [RELEASE_DRY_RUN.md](RELEASE_DRY_RUN.md) | Q4/P1-1 release install dry-run procedure |
 | [F5_VENDOR_DAY.md](F5_VENDOR_DAY.md) | Must F5 real agent host E2E checklist |
+| [AGENT_Q4_F5_PLAYBOOK.md](AGENT_Q4_F5_PLAYBOOK.md) | AI-agent executable steps for residual Q4 Unix + F5 |
 | [../CHANGELOG.md](../CHANGELOG.md) | Release notes |
 
 ## Exit criteria for GA

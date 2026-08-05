@@ -2,6 +2,8 @@
 
 Procedure to Pass **Q4** (install without Rust from a real Release) and optionally **P1-1** (signed releases).
 
+**AI agents:** prefer the copy-paste runbooks in [AGENT_Q4_F5_PLAYBOOK.md](AGENT_Q4_F5_PLAYBOOK.md) (`T-Q4-UNIX` / `T-Q4-WIN`), then update the evidence log below.
+
 ## Preconditions
 
 - CI green on the commit to tag (`ubuntu` / `windows` / `macos` + `user-testing`)
