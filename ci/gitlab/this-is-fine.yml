@@ -1,0 +1,40 @@
+# This Is Fine — read-only CI template (GitLab CI)
+#
+# Default: assess + verify. Does not modify protected branches.
+# Optional MR/patch generation must be explicitly enabled in .this-is-fine.toml
+# and in this pipeline.
+
+stages:
+  - contain
+
+this-is-fine:
+  stage: contain
+  image: rust:1.75
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+  before_script:
+    - |
+      if ! command -v tif >/dev/null 2>&1; then
+        cargo install --path crates/tif
+        export PATH="$HOME/.cargo/bin:$PATH"
+      fi
+    - |
+      if [ ! -f .this-is-fine.toml ]; then
+        tif init
+      fi
+  script:
+    - tif inspect --json
+    - tif verify --json
+    - |
+      tif assess --json \
+        --files-added 0 \
+        --files-changed 0 \
+        --lines-added 0 \
+        --deps-added 0
+  # artifacts:
+  #   when: always
+  #   paths:
+  #     - .this-is-fine/
+  #   reports:
+  #     # attach Damage Assessment JSON if you export it
