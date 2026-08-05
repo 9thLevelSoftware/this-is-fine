@@ -1,12 +1,159 @@
 # This Is Fine
 
-**Contain the fire. Do not remodel the building.**
+<p align="center">
+  <img src="assets/this-is-fine-banner.png" alt="Dog in a burning room, calmly saying THIS IS FINE." width="720" />
+</p>
 
-This Is Fine is a **local-first** adaptive restraint and simplification system for coding agents. It reduces unnecessary code, files, dependencies, abstractions, and token usage while enforcing a strict **correctness floor**.
+<p align="center">
+  <strong>Contain the fire. Do not remodel the building.</strong><br/>
+  <em>v1.0.0 — production release. The house is still on fire. The coffee is excellent.</em>
+</p>
 
-> This Is Fine is a repository-aware simplicity governor for coding agents. It applies controlled pressure, measurable containment policies, and verified simplification to produce the smallest correct implementation.
+---
+
+**This Is Fine** (`tif`) is a **local-first** restraint system for coding agents. When your AI co-pilot decides the bugfix needs a new microservice, three abstraction layers, and a dependency on `left-pad-redux`, This Is Fine is the calm dog who says: *maybe just fix the null check*.
+
+It applies controlled pressure, measurable containment policies, and **verified** simplification so you get the **smallest correct** implementation — not the smallest *interesting* one.
+
+> Minimalism is bounded by a non-negotiable **correctness floor**.  
+> A smaller wrong answer can never beat a larger right one.  
+> We will not ship vibes.
+
+---
+
+## Why this exists
+
+Coding agents are great at *adding*. They are… less great at *stopping*.
+
+This Is Fine sits next to your agent (Claude Code, Codex, Gemini CLI, OpenCode, or anything that speaks JSON) and:
+
+1. **Turns up the heat** (Fire Levels 1–4) so the agent feels social pressure to stay small  
+2. **Scores the damage** (files, lines, deps, abstractions — Fuel Added)  
+3. **Verifies** the result still works  
+4. Runs a **Firebreak** if things go Out of Control (isolated simplify → re-verify → approve)  
+5. Escalates to **Five-Alarm** only after current containment has already failed (we do not open with the fire hose)
+
+Everything stays on your machine. No cloud telemetry. No surprise model calls. Your secrets stay in your burning living room, where they belong.
+
+---
+
+## Install (no Rust required)
+
+Pick your preferred way to invite a dog into a burning repository.
+
+### One-liner (recommended)
+
+```bash
+# Unix / macOS / WSL — installs latest release, verifies SHA-256 against SHA256SUMS
+curl -fsSL https://raw.githubusercontent.com/9thLevelSoftware/this-is-fine/main/scripts/install.sh | bash
+```
+
+```powershell
+# Windows PowerShell
+irm https://raw.githubusercontent.com/9thLevelSoftware/this-is-fine/main/scripts/install.ps1 | iex
+```
+
+Pin a version (highly recommended once you stop living on the edge):
+
+```bash
+./scripts/install.sh --version v1.0.0
+```
+
+```powershell
+.\scripts\install.ps1 -Version v1.0.0
+```
+
+Then confirm the dog is house-trained:
+
+```bash
+tif --version   # → tif 1.0.0
+```
+
+> Prefer checkout-local install so SUMS helpers resolve offline-friendly: clone the repo, then `./scripts/install.sh --version v1.0.0`.
+
+### From source (for people who *want* more fire)
+
+```bash
+cargo install --path crates/tif
+# or
+cargo build --release -p tif   # → target/release/tif
+```
+
+Requires **Rust 1.75+**. End users of release binaries need no Rust — we already suffered for you.
+
+### Uninstall (when the coffee runs out)
+
+```bash
+./scripts/uninstall.sh --prefix ~/.local
+# optional: also purge credential secrets dirs
+./scripts/uninstall.sh --prefix ~/.local --purge-secrets
+```
+
+```powershell
+.\scripts\uninstall.ps1 -PurgeSecrets
+```
+
+Release assets + checksums: [GitHub Releases](https://github.com/9thLevelSoftware/this-is-fine/releases).
+
+---
+
+## 60-second quick start
+
+```bash
+cd your-perfectly-normal-repo   # smoke optional
+
+tif init          # lay down config + local state
+tif on            # start containment (the dog sits down)
+tif status        # how bad is it, really?
+
+# Tell the agent (or yourself) what the policy wants
+tif policy resolve --task "fix null pointer in parser"
+
+# Agent adapters call this around real work
+tif run begin --task "fix null pointer in parser" --agent claude-code --json
+
+# …agent implements the tiniest correct fix…
+
+tif run complete <run_id> --from-git --json --verification-passed true
+tif assess --from-git
+tif status --json
+```
+
+Suspend containment when you're deliberately exploring (yes, that's allowed):
+
+```bash
+tif off    # temporary leave of absence for the dog
+tif on     # back to work
+```
+
+Interactive command center (keyboard: `↑↓` / `1-8` / `r` refresh / `q` quit):
+
+```bash
+tif tui
+```
+
+Full recovery runbook (dual-failure, hung verify, disk full): **[docs/user-guide.md](docs/user-guide.md)**.
+
+---
+
+## Agent adapters
+
+Wire This Is Fine into a real agent product. Protocol smoke is not enough for glory — use the real host when you can.
+
+| Agent | Install |
+|-------|---------|
+| Claude Code | `adapters/claude-code/install.sh` / `install.ps1` |
+| Codex | `adapters/codex/install.sh` / `install.ps1` |
+| Gemini CLI | `adapters/gemini-cli/install.sh` / `install.ps1` |
+| OpenCode | `adapters/opencode/install.sh` / `install.ps1` |
+
+Always pass **`--json`**. Refuse envelopes with unknown major `protocol_version`. Spec: [`docs/protocol/v1.md`](docs/protocol/v1.md).
+
+---
 
 ## Product vocabulary
+
+Because "bloat" lacked *panache*.
 
 | Technical concept | Product term |
 |---|---|
@@ -21,134 +168,30 @@ This Is Fine is a **local-first** adaptive restraint and simplification system f
 | Excessive result | **Out of Control** |
 | Emergency recovery | **Five-Alarm** |
 
-## Status
+### Fire Levels
 
-**v1.0.0** — production-ready release. Phases 0–10 on `main` (Firebreak, adapters, TUI, distribution). Field Must items (install dry-run Q4, vendor F5) recorded in [`docs/V1_READINESS.md`](docs/V1_READINESS.md).
-
-| Doc | Purpose |
-|-----|---------|
-| [`docs/V1_READINESS.md`](docs/V1_READINESS.md) | **v1.0 readiness checklist** (Must/Should, owners, pass/fail) |
-| [`docs/USER_TESTING.md`](docs/USER_TESTING.md) | AI field-validation battery (Tiers A–D) |
-| [`docs/ROADMAP.md`](docs/ROADMAP.md) | Phase delivery + residual risks |
-| [`docs/user-guide.md`](docs/user-guide.md) | Install and recovery |
-| [`docs/security/threat-model.md`](docs/security/threat-model.md) | Threats and controls |
-
-## Support / incidents (V4)
-
-**Owner:** **9thLevelSoftware** maintainers (repo admins).
-
-For **apply / rollback / dual-failure** incidents:
-
-1. Follow the recovery runbook in [`docs/user-guide.md`](docs/user-guide.md).  
-2. Open a GitHub issue on [9thLevelSoftware/this-is-fine](https://github.com/9thLevelSoftware/this-is-fine/issues) with label `incident` (or `P0` if data loss / silent bad apply).  
-3. Attach `tif audit --json` (redacted) and OS / `tif --version` when possible.
-
-**Rota:** best-effort via GitHub Issues (not 24×7 SLA).
-
-## Features (current)
-
-- **Rust core** with `tif` CLI (JSON protocol for agents)
-- **Configuration**: `.this-is-fine.toml` + `.this-is-fine.local.toml`
-- **Fire Levels 1–5** (Five-Alarm is post-failure escalation only)
-- **Policy compiler**, pressure scenarios, task classification
-- **Simplicity scoring** with weights, hard limits, correctness-floor gate
-- **Verification** planner/runner (explicit config first, safe discovery second)
-- **Firebreak** closed loop with user-authorized reviewers (isolation + re-verify + approval queue)
-- **Five-Alarm** staged recovery after current containment failure
-- **Audit** store: SQLite + content-addressed artifacts (local only)
-- **Isolation** with real apply/rollback: Git worktree and non-Git snapshot
-- **Git-aware metrics** (`tif assess --from-git`, unified diff parse)
-- **Production TUI** (`tif tui`) — live events, Firebreak actions, reviewer probe, audit filter
-- **CI templates** for GitHub Actions and GitLab (read-only by default; optional guarded write)
-- **First-class adapters** for Claude Code, Codex, Gemini CLI, OpenCode (Unix + Windows installers)
-- **Distribution**: install scripts, release workflow with checksums, Homebrew/WinGet stubs
-- **Provider backends** on `tif-core` (mock default; OpenAI-compatible / Anthropic / process)
-
-## Install
-
-### Release binary (no Rust required)
+| Level | Name | Vibes |
+|---|---|---|
+| 1 | Ember | "Maybe we don't need a monorepo." |
+| 2 | Smolder | Stronger YAGNI side-eye |
+| 3 | Containment | **Default.** Guarded mode. Sip coffee. |
+| 4 | Critical | Aggressive reduction. The dog is still smiling. |
+| 5 | Five-Alarm | **Escalation only** after current-task containment failure. Not a lifestyle. |
 
 ```bash
-# Unix
-curl -fsSL https://raw.githubusercontent.com/9thLevelSoftware/this-is-fine/main/scripts/install.sh | bash
+tif fire-level        # show
+tif fire-level 4      # turn up the heat (1–4 operational)
 ```
 
-```powershell
-# Windows PowerShell
-irm https://raw.githubusercontent.com/9thLevelSoftware/this-is-fine/main/scripts/install.ps1 | iex
-```
-
-### From source
-
-```bash
-cargo install --path crates/tif
-```
-
-Or build the workspace:
-
-```bash
-cargo build --release -p tif
-# binary: target/release/tif
-```
-
-Requirements: Rust 1.75+ (for building). End users of release binaries need no Rust toolchain.
-
-### Platforms
-
-Windows, macOS, and Linux are supported. Paths and shell invocation are cross-platform aware.
-
-## Quick start
-
-```bash
-# In your repository
-tif init
-tif on
-tif status
-
-# Compile pressure + policy for a task
-tif policy resolve --task "fix null pointer in parser"
-
-# Begin a containment run (agent adapters call this)
-tif run begin --task "fix null pointer in parser" --agent claude-code
-
-# After implementation: score metrics (explicit or from git)
-tif assess --files-changed 1 --lines-added 12 --deps-added 0
-tif assess --from-git
-
-# Plan/run verification
-tif verify --dry-run
-tif verify
-
-# Fire Level
-tif fire-level
-tif fire-level 4
-
-# Interactive TUI (keyboard: ↑↓ / 1-8 / r refresh / q quit)
-# Firebreak: a approve · x reject · R rollback (confirm)
-tif tui
-
-# Suspend containment for exploratory work
-tif off
-```
-
-See the [user guide](docs/user-guide.md) for recovery (dual-failure, hung verify, disk full).
-
-### JSON (agent adapters)
-
-```bash
-tif policy resolve --json --task "add feature X"
-tif run begin --json --task "add feature X" --agent codex
-tif assess --json --lines-added 40 --deps-added 1
-tif audit show --json
-```
+---
 
 ## Configuration
 
 | File | Purpose |
 |---|---|
 | `.this-is-fine.toml` | Shared, committed repository policy |
-| `.this-is-fine.local.toml` | Machine-local reviewers, credentials, endpoints (gitignored) |
-| `.this-is-fine/` | Local SQLite audit DB and artifacts |
+| `.this-is-fine.local.toml` | Machine-local reviewers, credentials, endpoints (**gitignored**) |
+| `.this-is-fine/` | Local SQLite audit DB and artifacts (your black box recorder) |
 
 Illustrative shared config:
 
@@ -188,67 +231,91 @@ max_days = 7
 successful_commits = 3
 ```
 
-### Fire Levels
+Schema reference: [`docs/config/schema-v1.md`](docs/config/schema-v1.md).
 
-| Level | Name | Behavior |
-|---|---|---|
-| 1 | Ember | Light brevity and reuse guidance |
-| 2 | Smolder | Stronger YAGNI pressure |
-| 3 | Containment | Default guarded mode |
-| 4 | Critical | Aggressive reduction |
-| 5 | Five-Alarm | Escalation only after current-task containment failure |
+---
 
-## Correctness floor
+## Correctness floor (the part that is not a joke)
 
-Minimalism is bounded by a non-negotiable gate. A smaller incorrect candidate can **never** defeat a larger correct candidate. Adaptation cannot lower the floor. No unverified Firebreak may replace a known-good implementation.
+- A smaller **incorrect** candidate can **never** defeat a larger **correct** candidate  
+- Adaptation cannot weaken the floor, sensitive-path rules, or required verification  
+- No unverified Firebreak may replace a known-good implementation  
+- Source egress only with explicit reviewer permission  
 
-## CLI reference (core)
+If the house is on fire *and* the tests fail, we do not redecorate. We put the fire out.
+
+---
+
+## CLI cheat sheet
 
 ```text
-tif init
-tif on | off
-tif status
+tif init | on | off | status
 tif inspect
-tif policy resolve [--task …] [--fire-level N]
+tif policy resolve [--task …] [--fire-level N] [--json]
 tif run begin|complete|show|status
-tif assess [--files-added N] [--lines-added N] [--deps-added N]
+tif assess [--from-git] [--files-changed N] [--lines-added N] [--deps-added N]
 tif verify [--dry-run]
 tif firebreak [--run-id …] [--candidate PATH] [--apply]
-tif assess --from-git | --from-diff PATH
 tif fire-level [1-4]
 tif rollback <run_id>
-tif audit show| --gc | --purge
-tif five-alarm --plan
-tif five-alarm --run <run_id> [--apply]
-tif adaptation status
-tif adaptation recommend --category bug_fix
-tif adaptation reset
+tif audit show | --gc | --purge
+tif five-alarm --plan | --run <run_id> [--apply]
+tif adaptation status | recommend | reset
 tif tui
 ```
 
-Add `--json` for the adapter protocol. See [`docs/protocol/v1.md`](docs/protocol/v1.md).
+Add `--json` for the adapter protocol.
 
-## Architecture (crates)
+---
+
+## What you get in v1.0
+
+- **Rust core** + `tif` CLI (JSON protocol for agents)  
+- **Firebreak** closed loop with user-authorized reviewers (isolation + re-verify + approval)  
+- **Five-Alarm** staged recovery after current containment failure  
+- **Production TUI** — live events, approve/reject, probe, audit filter  
+- **Adapters** for Claude Code, Codex, Gemini CLI, OpenCode (Unix + Windows)  
+- **Install scripts** with SHA-256 SUMS verification; multi-OS release assets  
+- **Audit** store: SQLite + content-addressed artifacts (local only)  
+- **CI templates** (GitHub Actions / GitLab) — read-only by default  
+
+Field evidence and readiness: [`docs/V1_READINESS.md`](docs/V1_READINESS.md).
+
+---
+
+## Architecture (for the curious)
 
 ```text
-crates/tif-core   # domain library (+ providers feature flags)
+crates/tif-core   # domain library (+ provider feature flags)
 crates/tif        # CLI + TUI binary
+crates/tif-e2e    # field-validation battery
 adapters/         # installable agent adapters
-ci/               # consumer-repo GitHub Actions + GitLab templates
-.github/workflows # multi-OS CI for this repository
-docs/             # design, protocol, config, security, roadmap
+ci/               # consumer-repo CI templates
+docs/             # design, protocol, security, readiness
 ```
+
+---
 
 ## Privacy
 
-- No cloud telemetry
-- No unauthorized hosted models
-- Audit data stays on disk under `.this-is-fine/`
-- Source egress only when a user-authorized reviewer allows it
+- No cloud telemetry  
+- No unauthorized hosted models  
+- Audit data stays under `.this-is-fine/`  
+- Reviewers only from the user-authorized local pool  
 
-## Visual identity
+---
 
-Product motifs are original (controlled flame in a terminal, extinguisher-as-brace, etc.). Do **not** copy the well-known “This Is Fine” comic artwork.
+## Support / when it is *not* fine
+
+**Owner:** [9thLevelSoftware](https://github.com/9thLevelSoftware) maintainers.
+
+1. Recovery runbook → [`docs/user-guide.md`](docs/user-guide.md)  
+2. Open a GitHub issue with label `incident` (or `P0` for data loss / silent bad apply)  
+3. Attach redacted `tif audit --json`, OS, and `tif --version` when possible  
+
+Best-effort community support. Not a 24×7 fire department.
+
+---
 
 ## Development
 
@@ -258,20 +325,32 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 ```
 
-## License
-
-MIT OR Apache-2.0
+---
 
 ## Documentation
 
 | Doc | Description |
 |-----|-------------|
-| [Design specification](docs/superpowers/specs/2026-08-04-this-is-fine-design.md) | Product and system design |
-| [Production roadmap](docs/ROADMAP.md) | Phases 0–10 (GA checklist) |
-| [User guide](docs/user-guide.md) | Install, adapters, recovery runbook |
+| [User guide](docs/user-guide.md) | Install, adapters, recovery |
+| [V1 readiness](docs/V1_READINESS.md) | Must/Should checklist + evidence |
 | [Protocol v1](docs/protocol/v1.md) | Adapter JSON contract |
 | [Config schema v1](docs/config/schema-v1.md) | Configuration reference |
 | [Threat model](docs/security/threat-model.md) | Security boundaries |
 | [Versioning](docs/VERSIONING.md) | SemVer / schema / protocol |
 | [Adapters](adapters/README.md) | Agent install + troubleshooting |
+| [Design specification](docs/superpowers/specs/2026-08-04-this-is-fine-design.md) | Full product design |
 | [Changelog](CHANGELOG.md) | Release notes |
+| [Roadmap](docs/ROADMAP.md) | Phases 0–10 |
+
+---
+
+## License
+
+MIT OR Apache-2.0
+
+---
+
+<p align="center">
+  <em>This is fine.</em><br/>
+  <sub>Please verify your Firebreak candidates. The dog is not a unit test.</sub>
+</p>
