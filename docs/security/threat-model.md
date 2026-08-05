@@ -50,7 +50,7 @@
 
 > No unverified or failed simplification may replace a known-good implementation.
 
-Production Firebreak remains **fail-closed** without isolation + re-verify (+ approval when required). Simulated metrics must never authorize apply.
+Production Firebreak is **fail-closed** without isolation + re-verify (+ approval when required). With authorized backends, the Phase 2 closed loop still never applies unverified, larger, or out-of-containment candidates. Simulated metrics must never authorize apply.
 
 ## Residual risks (tracked)
 

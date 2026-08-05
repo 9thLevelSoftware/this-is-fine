@@ -54,6 +54,8 @@ pub struct IsolatedApplyRequest {
     pub authorize_apply: bool,
     /// When true, skip ranking and treat as needing approval only.
     pub force_approval: bool,
+    /// When true, the operator already approved (`tif approve`); skip approval gate.
+    pub user_approved: bool,
 }
 
 /// Outcome of a Firebreak attempt.
@@ -549,9 +551,10 @@ impl FirebreakEngine {
             });
         }
 
-        let requires_approval = req.force_approval
-            || req.policy.require_firebreak_approval
-            || touches_sensitive(&req.policy, &req.candidate_metrics);
+        let requires_approval = !req.user_approved
+            && (req.force_approval
+                || req.policy.require_firebreak_approval
+                || touches_sensitive(&req.policy, &req.candidate_metrics));
 
         if requires_approval {
             return Ok(FirebreakOutcome {
@@ -1215,6 +1218,7 @@ mod tests {
                 },
                 authorize_apply: true,
                 force_approval: false,
+                user_approved: false,
             },
             &iso,
             &mut session,
@@ -1238,6 +1242,7 @@ mod tests {
                     candidate_floor: CorrectnessFloor::all_pass(),
                     authorize_apply: true,
                     force_approval: false,
+                    user_approved: false,
                 },
                 &iso,
                 &mut session,
@@ -1300,6 +1305,7 @@ mod tests {
                     candidate_floor: CorrectnessFloor::all_pass(),
                     authorize_apply: true,
                     force_approval: false,
+                    user_approved: false,
                 },
                 &iso,
                 &mut session,
@@ -1350,6 +1356,7 @@ mod tests {
                     candidate_floor: CorrectnessFloor::all_pass(),
                     authorize_apply: true,
                     force_approval: false,
+                    user_approved: false,
                 },
                 &iso,
                 &mut session,

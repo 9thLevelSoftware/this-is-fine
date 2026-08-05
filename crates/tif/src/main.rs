@@ -135,6 +135,7 @@ fn run() -> anyhow::Result<ExitCode> {
             candidate,
             apply,
             invoke_backend,
+            auto,
             task,
         } => {
             let metrics = resolve_metrics(
@@ -156,10 +157,13 @@ fn run() -> anyhow::Result<ExitCode> {
                 candidate,
                 apply,
                 invoke_backend,
+                auto,
                 task,
                 json,
             )
         }
+        Commands::Approve { run_id } => cmd_approve(&root, &run_id, json),
+        Commands::Reject { run_id } => cmd_reject(&root, &run_id, json),
         Commands::FireLevel { level } => match level {
             None => cmd_fire_level_get(&root, json),
             Some(level) => cmd_fire_level_set(&root, level, json),
@@ -484,12 +488,16 @@ fn cmd_run_complete(
 
     let orch = RunOrchestrator::new();
     orch.complete(&cfg, &mut run, metrics, report, floor, auto_firebreak)?;
-    // Keep OutOfControl open so manual `tif firebreak --run-id` can still run.
+    // Keep OutOfControl / AwaitingApproval open for manual Firebreak or approve/reject.
     // Contained / Restored / Rejected / Applied runs may close.
-    if run.state != RunState::OutOfControl {
+    if !matches!(
+        run.state,
+        RunState::OutOfControl | RunState::AwaitingApproval
+    ) {
         let _ = orch.close(&mut run);
     }
     store.record_run(&run)?;
+    let _ = store.record_adaptation_from_run(&run);
 
     Ok(emit_ok(
         serde_json::json!({
@@ -497,6 +505,7 @@ fn cmd_run_complete(
             "state": run.state,
             "assessment": run.assessment,
             "firebreak": run.firebreak,
+            "approval_expires_at": run.approval_expires_at,
         }),
         json,
         |_| {
@@ -507,6 +516,10 @@ fn cmd_run_complete(
             }
             if let Some(ref fb) = run.firebreak {
                 println!("firebreak: {}", fb.message);
+            }
+            if run.state == RunState::AwaitingApproval {
+                println!("approve: tif approve {}", run.id);
+                println!("reject:  tif reject {}", run.id);
             }
         },
     ))
@@ -592,6 +605,7 @@ fn cmd_firebreak(
     candidate: Option<PathBuf>,
     authorize_apply: bool,
     invoke_backend: bool,
+    auto: bool,
     task: Option<String>,
     json: bool,
 ) -> anyhow::Result<ExitCode> {
@@ -615,7 +629,7 @@ fn cmd_firebreak(
             &cfg,
             &root.to_string_lossy(),
             BeginRunRequest {
-                task_text: Some("manual firebreak".into()),
+                task_text: Some(task.clone().unwrap_or_else(|| "manual firebreak".into())),
                 force: true,
                 ..Default::default()
             },
@@ -769,6 +783,7 @@ fn cmd_firebreak(
                 }
             };
 
+        let apply = authorize_apply || (auto && cfg.approval.auto_apply_firebreak);
         let fb_result = orch.run_firebreak_isolated(
             &cfg,
             &mut run,
@@ -778,18 +793,37 @@ fn cmd_firebreak(
                 session: &mut session,
                 candidate_metrics,
                 candidate_floor,
-                authorize_apply,
+                authorize_apply: apply,
                 ranking_original_metrics,
                 ranking_original_score,
+                user_approved: false,
             },
         );
         // Re-persist after apply (applied / restore_pending / baseline_path).
         store.record_run(&run)?;
+        let _ = store.record_adaptation_from_run(&run);
         fb_result?;
+    } else if auto || !cfg.reviewers.is_empty() {
+        // Phase 2 automatic closed loop when --auto or reviewers are configured.
+        // Persist before apply is handled inside the closed loop (session attach).
+        store.record_run(&run)?;
+        let authorize = authorize_apply || auto || cfg.approval.auto_apply_firebreak;
+        orch.run_firebreak_auto(
+            &cfg,
+            &mut run,
+            &floor,
+            tif_core::FirebreakAutoOptions {
+                authorize_apply: authorize,
+                user_approved: false,
+            },
+        )?;
+        store.record_run(&run)?;
+        let _ = store.record_adaptation_from_run(&run);
     } else {
-        // Production fail-closed path (no candidate tree staged).
+        // No reviewers: fail-closed.
         orch.run_firebreak(&cfg, &mut run, &floor)?;
         store.record_run(&run)?;
+        let _ = store.record_adaptation_from_run(&run);
     }
 
     Ok(emit_ok(
@@ -798,6 +832,7 @@ fn cmd_firebreak(
             "state": run.state,
             "firebreak": run.firebreak,
             "isolation": run.isolation_session,
+            "approval_expires_at": run.approval_expires_at,
         }),
         json,
         |_| {
@@ -808,11 +843,82 @@ fn cmd_firebreak(
                 if let Some(ref s) = run.isolation_session {
                     println!("isolation: {} ({:?})", s.id, s.kind);
                 }
+                if run.state == RunState::AwaitingApproval {
+                    println!("approve: tif approve {}", run.id);
+                    println!("reject:  tif reject {}", run.id);
+                }
             } else {
                 println!("no firebreak outcome");
             }
         },
     ))
+}
+
+fn cmd_approve(root: &Path, run_id: &str, json: bool) -> anyhow::Result<ExitCode> {
+    let cfg = load_config(root)?;
+    let paths = RepoPaths::for_root(root);
+    let store = AuditStore::open(&paths, &cfg.audit)?;
+    let mut run = store
+        .get_run(run_id)?
+        .with_context(|| format!("run not found: {run_id}"))?;
+    let orch = RunOrchestrator::new();
+    match orch.approve_firebreak(&cfg, &mut run) {
+        Ok(()) => {
+            store.record_run(&run)?;
+            let _ = store.record_adaptation_from_run(&run);
+            Ok(emit_ok(
+                serde_json::json!({
+                    "run_id": run.id.as_str(),
+                    "state": run.state,
+                    "firebreak": run.firebreak,
+                    "isolation": run.isolation_session,
+                }),
+                json,
+                |_| {
+                    println!("approved run {}", run.id);
+                    println!("state: {}", run.state.as_str());
+                    if let Some(ref fb) = run.firebreak {
+                        println!("{}", fb.message);
+                        println!("applied: {}", fb.applied);
+                    }
+                },
+            ))
+        }
+        Err(e) => {
+            let _ = store.record_run(&run);
+            Ok(emit_err(e.to_string(), json))
+        }
+    }
+}
+
+fn cmd_reject(root: &Path, run_id: &str, json: bool) -> anyhow::Result<ExitCode> {
+    let cfg = load_config(root)?;
+    let paths = RepoPaths::for_root(root);
+    let store = AuditStore::open(&paths, &cfg.audit)?;
+    let mut run = store
+        .get_run(run_id)?
+        .with_context(|| format!("run not found: {run_id}"))?;
+    let orch = RunOrchestrator::new();
+    match orch.reject_firebreak(&mut run, None) {
+        Ok(()) => {
+            store.record_run(&run)?;
+            let _ = store.record_adaptation_from_run(&run);
+            Ok(emit_ok(
+                serde_json::json!({
+                    "run_id": run.id.as_str(),
+                    "state": run.state,
+                    "firebreak": run.firebreak,
+                }),
+                json,
+                |_| {
+                    println!("rejected firebreak for run {}", run.id);
+                    println!("state: {}", run.state.as_str());
+                    println!("original preserved");
+                },
+            ))
+        }
+        Err(e) => Ok(emit_err(e.to_string(), json)),
+    }
 }
 
 fn cmd_fire_level_get(root: &Path, json: bool) -> anyhow::Result<ExitCode> {
@@ -918,6 +1024,7 @@ fn cmd_rollback(root: &Path, run_id: &str, json: bool) -> anyhow::Result<ExitCod
     };
 
     store.record_run(&run)?;
+    let _ = store.record_adaptation_from_run(&run);
 
     let result = RollbackResult {
         run_id: run_id.into(),
@@ -1381,9 +1488,12 @@ fn cmd_reviewer_test(
     Ok(code)
 }
 
-fn cmd_adaptation(_root: &Path, _show: bool, json: bool) -> anyhow::Result<ExitCode> {
-    // MVP: empty local engine; stats will load from SQLite in a later pass.
-    let eng = AdaptationEngine::new();
+fn cmd_adaptation(root: &Path, _show: bool, json: bool) -> anyhow::Result<ExitCode> {
+    let cfg = load_config(root)?;
+    let paths = RepoPaths::for_root(root);
+    let store = AuditStore::open(&paths, &cfg.audit)?;
+    let stats = store.load_adaptation_stats()?;
+    let eng = AdaptationEngine::load(stats);
     let rec = eng.recommend(tif_core::TaskCategory::Unknown);
     Ok(emit_ok(
         serde_json::json!({
@@ -1394,6 +1504,14 @@ fn cmd_adaptation(_root: &Path, _show: bool, json: bool) -> anyhow::Result<ExitC
         |_| {
             println!("Local adaptation (no telemetry)");
             println!("runs: {}", eng.stats().total_runs);
+            println!(
+                "contained={} ooc={} firebreak_ok={} firebreak_fail={} rollbacks={}",
+                eng.stats().contained,
+                eng.stats().out_of_control,
+                eng.stats().firebreak_success,
+                eng.stats().firebreak_fail,
+                eng.stats().rollbacks
+            );
             println!("recommendations: {:?}", rec.notes);
         },
     ))

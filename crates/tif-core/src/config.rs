@@ -129,7 +129,7 @@ pub struct SimplicityLimits {
     pub score: Option<f64>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ApprovalConfig {
     #[serde(default)]
     pub sensitive_paths: Vec<String>,
@@ -138,6 +138,25 @@ pub struct ApprovalConfig {
     /// When true, Firebreak application always requires explicit approval.
     #[serde(default)]
     pub require_firebreak_approval: bool,
+    /// When true (default), non-sensitive Firebreak candidates that pass
+    /// re-verify + ranking may be applied without an interactive approval step.
+    #[serde(default = "default_true")]
+    pub auto_apply_firebreak: bool,
+    /// Optional hours until a pending approval expires (`None` = no expiry).
+    #[serde(default)]
+    pub approval_ttl_hours: Option<u32>,
+}
+
+impl Default for ApprovalConfig {
+    fn default() -> Self {
+        Self {
+            sensitive_paths: Vec::new(),
+            sensitive_task_classes: Vec::new(),
+            require_firebreak_approval: false,
+            auto_apply_firebreak: true,
+            approval_ttl_hours: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -661,6 +680,8 @@ new_runtime_dependencies = 0
 [approval]
 sensitive_paths = []
 require_firebreak_approval = false
+auto_apply_firebreak = true
+# approval_ttl_hours = 72
 
 [audit]
 tier = "redacted"

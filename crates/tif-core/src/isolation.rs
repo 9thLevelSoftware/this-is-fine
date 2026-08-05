@@ -294,16 +294,32 @@ impl Isolator for SnapshotIsolator {
 /// Overlay candidate → source, then prune source files deleted in the candidate
 /// (present in baseline, absent from candidate). On any failure, attempt restore
 /// and never claim restore succeeded unless it returned Ok.
+/// Prefer `candidate_path` (reviewer output) when set; otherwise the isolation workspace root.
+pub fn session_candidate_root(session: &IsolationSession) -> &Path {
+    session
+        .candidate_path
+        .as_deref()
+        .unwrap_or(session.path.as_path())
+}
+
 fn apply_with_prune_and_failsafe(session: &mut IsolationSession) -> Result<()> {
     let baseline = session
         .baseline_path
         .clone()
         .ok_or_else(|| TifError::Isolation("baseline missing before apply".into()))?;
 
+    let candidate_root = session_candidate_root(session).to_path_buf();
+    if !candidate_root.exists() {
+        return Err(TifError::Isolation(format!(
+            "candidate root missing: {}",
+            candidate_root.display()
+        )));
+    }
+
     let apply_result = (|| -> Result<()> {
-        copy_dir_selective(&session.path, &session.source_root)?;
+        copy_dir_selective(&candidate_root, &session.source_root)?;
         // Symmetric prune: remove source paths that exist in baseline but not candidate.
-        prune_deleted_in_candidate(&session.source_root, &baseline, &session.path, &baseline)?;
+        prune_deleted_in_candidate(&session.source_root, &baseline, &candidate_root, &baseline)?;
         Ok(())
     })();
 
@@ -540,11 +556,18 @@ fn gc_dir_entries(
 }
 
 fn is_skipped_name(name: &str) -> bool {
-    // Skip VCS, local state, and heavy build/dependency trees only.
+    // Skip VCS, local state, heavy build/dependency trees, and reviewer staging dirs.
     // Config files (`.this-is-fine.toml`) are copied so baselines stay complete.
     matches!(
         name,
-        ".git" | ".this-is-fine" | "target" | "node_modules" | ".venv" | "dist" | "build"
+        ".git"
+            | ".this-is-fine"
+            | ".tif-candidate"
+            | "target"
+            | "node_modules"
+            | ".venv"
+            | "dist"
+            | "build"
     )
 }
 
