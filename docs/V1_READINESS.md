@@ -105,7 +105,7 @@ _
 | **Q2** | No open P0 bugs | Issue tracker: zero open bugs labeled `P0` / `blocker` for v1.0 | EM | 2026-08-05: zero open issues on repo (API check). **Re-check at tag.** | **Pass** (as of 2026-08-05) |
 | **Q3** | Versioning discipline | SemVer `1.0.0`; schema + protocol compatibility documented; CHANGELOG has v1.0 section | REL | Still `0.1.0`; VERSIONING.md present | Unknown (tag-time) |
 | **Q4** | Install without Rust | Clean machine (or VM) install via `scripts/install.sh` **and** `scripts/install.ps1` from a real GitHub Release asset; `tif --version` works | REL | Release [v0.1.1-rc.1](https://github.com/9thLevelSoftware/this-is-fine/releases/tag/v0.1.1-rc.1) assets + SHA256SUMS green. **Windows field Pass** (2026-08-05): `install.ps1 -Version v0.1.1-rc.1` SUMS OK. **Unix field Pass** (2026-08-05, macOS arm64): `install.sh --version v0.1.1-rc.1` SUMS OK → version → upgrade → uninstall. | **Pass** |
-| **Q5** | Checksums verified in install path | Install scripts verify SHA-256 against published `SHA256SUMS` by default (refuse if missing/mismatch); documented in user-guide | REL | `scripts/lib/sha256-verify.sh` + **D01/D02**; user-guide; field Pass after tagged release dry-run | **Pass** (code + contract tests); field dry-run remaining |
+| **Q5** | Checksums verified in install path | Install scripts verify SHA-256 against published `SHA256SUMS` by default (refuse if missing/mismatch); documented in user-guide | REL | `scripts/lib/sha256-verify.sh` + **D01/D02**; user-guide; field SUMS verify Pass on Win + macOS for `v0.1.1-rc.1` (see Q4 / [RELEASE_DRY_RUN.md](RELEASE_DRY_RUN.md)) | **Pass** |
 
 ### 3.4 Security & privacy
 
@@ -138,7 +138,7 @@ _
 | **P1-5** | aarch64 (or documented skip) | Release matrix cell green **or** “unsupported arch” listed in install docs | REL | `release.yml` builds `aarch64-unknown-linux-gnu` + `aarch64-apple-darwin` | **Pass** (release matrix) |
 | **P1-6** | Performance budgets recorded | Policy resolve p95 budget; assess on ≥10k-line diff budget; measured once on reference hardware | QA | **C03** (policy×100 + assess 10k lines); CI user-testing | **Pass** (smoke budgets) |
 | **P1-7** | Adapter version matrix | Table: agent product version × tested tif version × OS | DX | [adapters/VERSION_MATRIX.md](adapters/VERSION_MATRIX.md) has protocol placeholders only — **needs real agent product versions** | **In progress** |
-| **P1-8** | Upgrade / uninstall tested | Install → upgrade to next RC → uninstall leaves no secrets in default paths | REL | `scripts/uninstall.{sh,ps1}` + e2e **P18** (real install scripts `--from-source` → upgrade → uninstall + secrets purge). Release-channel dry-run: [RELEASE_DRY_RUN.md](RELEASE_DRY_RUN.md) | **Pass** (from-source automated); release-channel residual in Q4 |
+| **P1-8** | Upgrade / uninstall tested | Install → upgrade to next RC → uninstall leaves no secrets in default paths | REL | `scripts/uninstall.{sh,ps1}` + e2e **P18** (real install scripts `--from-source` → upgrade → uninstall + secrets purge). Release-channel dry-run Pass on Win + macOS for `v0.1.1-rc.1`: [RELEASE_DRY_RUN.md](RELEASE_DRY_RUN.md) | **Pass** |
 | **P1-9** | TUI destructive ops reviewed | Rollback/purge confirmations verified manually on narrow terminal | DX | TUI unit/state tests for confirmations | Pass (unit); manual residual |
 | **P1-10** | CI write path dry-run | Template job with `allow_write` produces patch artifact only; protected branch never updated | SRE | Templates double-gated; threat-model | **Pass** (template review) |
 
@@ -285,7 +285,7 @@ Honest fill-in for planning (update as evidence lands):
 
 **Should residual:** P1-1 signed tag dry-run; P1-2 PM signature; P1-4/P1-7 vendor product versions; human SEC countersign on X2.
 
-**Implication:** Not Ready for unconditional v1.0 until F5, full Q4, and tag-time Q items clear. Prefer messaging:
+**Implication:** Not Ready for unconditional v1.0 until F5 (same-agent cross-OS) and tag-time Q items (Q2/Q3) clear. Q4 is Pass. Prefer messaging:
 
 > **v0.1 production candidate — AI field-validated; controlled rollout toward tagged v1.0.**
 
