@@ -367,6 +367,137 @@ fn b06_firebreak_success_and_rollback() {
 }
 
 #[test]
+fn b07_sensitive_path_requires_approval() {
+    ensure_tif_built();
+    let r = run_scenario("B07", || {
+        let tmp = copy_fixture("security-sensitive").map_err(|e| e.to_string())?;
+        let root = tmp.path();
+        // Mock reduce so candidate is smaller and ready for approval.
+        fs::write(root.join("TIF_MOCK_REDUCE"), vec![b'X'; 40_000]).map_err(|e| e.to_string())?;
+        // Touch sensitive path so approval policy engages (also require_firebreak_approval=true).
+        let login = root.join("src/auth/login.rs");
+        let mut body = fs::read_to_string(&login).map_err(|e| e.to_string())?;
+        body.push_str("\n// sensitive touch\n");
+        fs::write(&login, body).map_err(|e| e.to_string())?;
+        git_init_commit(root).map_err(|e| e.to_string())?;
+
+        let begin = tif_json(
+            root,
+            &["run", "begin", "--task", "auth hardening", "--force"],
+        )
+        .map_err(|e| e.to_string())?;
+        if !begin.ok_envelope() {
+            return Err(format!("begin: {}", begin.summary()));
+        }
+        let run_id = begin.data_str("run_id").ok_or("no run_id")?;
+
+        let complete = tif_json(
+            root,
+            &[
+                "run",
+                "complete",
+                &run_id,
+                "--deps-added",
+                "1",
+                "--files-added",
+                "1",
+                "--files-changed",
+                "1",
+                "--lines-added",
+                "80",
+                "--auto-firebreak",
+                "--verification-passed",
+                "true",
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+
+        let state = complete.data_str("state").unwrap_or_default();
+        let fb = complete.data().and_then(|d| d.get("firebreak"));
+        let applied = fb
+            .and_then(|f| f.get("applied"))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let requires = fb
+            .and_then(|f| f.get("requires_approval"))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+
+        if applied {
+            return Err(format!(
+                "must not auto-apply when approval required; state={state} out={}",
+                complete.stdout
+            ));
+        }
+        if state != "awaiting_approval" && !requires {
+            return Err(format!(
+                "expected awaiting_approval or requires_approval; state={state} out={}",
+                complete.stdout
+            ));
+        }
+
+        // Reject path leaves reduce marker.
+        let rej = tif_json(root, &["reject", &run_id]).map_err(|e| e.to_string())?;
+        if !rej.ok_envelope() {
+            return Err(format!("reject failed: {}", rej.summary()));
+        }
+        if !root.join("TIF_MOCK_REDUCE").exists() {
+            return Err("reject should leave original bloat marker".into());
+        }
+
+        // Fresh run → approve applies.
+        let begin2 = tif_json(
+            root,
+            &["run", "begin", "--task", "auth approve path", "--force"],
+        )
+        .map_err(|e| e.to_string())?;
+        let run_id2 = begin2.data_str("run_id").ok_or("no run_id2")?;
+        let complete2 = tif_json(
+            root,
+            &[
+                "run",
+                "complete",
+                &run_id2,
+                "--deps-added",
+                "1",
+                "--files-added",
+                "1",
+                "--lines-added",
+                "80",
+                "--auto-firebreak",
+                "--verification-passed",
+                "true",
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+        let state2 = complete2.data_str("state").unwrap_or_default();
+        if state2 != "awaiting_approval"
+            && !complete2
+                .data()
+                .and_then(|d| d.get("firebreak"))
+                .and_then(|f| f.get("requires_approval"))
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false)
+        {
+            return Err(format!("second run not awaiting approval: {state2}"));
+        }
+
+        let ap = tif_json(root, &["approve", &run_id2]).map_err(|e| e.to_string())?;
+        if !ap.ok_envelope() {
+            return Err(format!("approve failed: {}", ap.summary()));
+        }
+        if root.join("TIF_MOCK_REDUCE").exists() {
+            return Err("approve should apply mock reduce (delete marker)".into());
+        }
+
+        Ok(format!(
+            "approval gate ok; reject kept original; approve applied; first_state={state}"
+        ))
+    });
+    assert_scenario(&r);
+}
+
+#[test]
 fn b05_firebreak_fail_preserves_source() {
     ensure_tif_built();
     let r = run_scenario("B05", || {

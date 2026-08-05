@@ -120,7 +120,7 @@ _
 
 | ID | Criterion | Pass / Fail criteria | Owner | Evidence | Status |
 |----|-----------|----------------------|-------|----------|--------|
-| **V1** | Controlled soak | ≥ **10 business days** (or ≥ **50** real coding tasks) on real repos with real agents; log incidents | QA / EM | UT-0 harness in `crates/tif-e2e` + [USER_TESTING.md](USER_TESTING.md); **C01 50-task battery still TODO** | In progress |
+| **V1** | Controlled soak | ≥ **10 business days** (or ≥ **50** real coding tasks) on real repos with real agents; log incidents | QA / EM | UT-0/UT-1 harness: Tier A full + core B in `crates/tif-e2e`; **C01 50-task battery still TODO** | In progress |
 | **V2** | Incident log empty of unfixed P0s | All soak P0s fixed or accepted with mitigation before tag | EM | | Unknown |
 | **V3** | Recovery drill | Operator completes dual-failure / rollback drill using only user-guide; time-to-recover recorded | SRE | | Unknown |
 | **V4** | Support ownership named | On-call or support rota exists for apply/rollback incidents; contact path in README or user-guide | SRE | | Unknown |

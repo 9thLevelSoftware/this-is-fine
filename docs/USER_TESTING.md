@@ -404,12 +404,15 @@ cargo test -p tif-e2e scenario_b06 -- --nocapture
 | **UT-5** Docs close | This file current; V1_READINESS evidence filled | PR |
 | **UT-6** Recurring | Nightly/CI or on-demand AI “run full battery” | Regression |
 
-**Current status:** **UT-0 complete.**  
+**Current status:** **UT-0 + UT-1 (Tier A) complete; Tier B partial.**  
 - Crate: `crates/tif-e2e`  
 - Fixtures: `tests/user/fixtures/{rust-mini,rust-bloat,js-mini,security-sensitive}`  
 - Scripts: `scripts/user-test/run-all.sh` / `run-all.ps1`  
 - CI: `user-testing` job on ubuntu + windows  
-- Automated smoke IDs: **A02, A05, B01, B05, B06, B11, B12, B14** (+ UT0 binary/fixture check)
+- Automated IDs:  
+  - **Tier A (all):** A01–A10  
+  - **Tier B:** B01, B05–B07, B11, B12, B14  
+  - **Pending:** B02–B04, B08–B10, B13, B15, Tier C soak, Tier D install
 
 ---
 
