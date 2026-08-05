@@ -104,7 +104,7 @@ _
 | **Q1** | Multi-OS CI green on release commit | `ubuntu`, `windows`, `macos` fmt + clippy `-D warnings` + tests pass on the commit to be tagged | REL | `.github/workflows/ci.yml` matrix + `user-testing` job | **Pass** on green main (re-check at tag) |
 | **Q2** | No open P0 bugs | Issue tracker: zero open bugs labeled `P0` / `blocker` for v1.0 | EM | 2026-08-05: zero open issues on repo (API check). **Re-check at tag.** | **Pass** (as of 2026-08-05) |
 | **Q3** | Versioning discipline | SemVer `1.0.0`; schema + protocol compatibility documented; CHANGELOG has v1.0 section | REL | Still `0.1.0`; VERSIONING.md present | Unknown (tag-time) |
-| **Q4** | Install without Rust | Clean machine (or VM) install via `scripts/install.sh` **and** `scripts/install.ps1` from a real GitHub Release asset; `tif --version` works | REL | Tag **`v0.1.1-rc.1`** pushed to trigger release workflow; dry-run per [RELEASE_DRY_RUN.md](RELEASE_DRY_RUN.md). **Pass when dry-run evidence recorded.** | **In progress** (RC tagged) |
+| **Q4** | Install without Rust | Clean machine (or VM) install via `scripts/install.sh` **and** `scripts/install.ps1` from a real GitHub Release asset; `tif --version` works | REL | Release [v0.1.1-rc.1](https://github.com/9thLevelSoftware/this-is-fine/releases/tag/v0.1.1-rc.1) assets + SHA256SUMS green. **Windows:** `install.ps1 -Version v0.1.1-rc.1` SUMS OK → `tif --version` → upgrade → uninstall (2026-08-05). **Unix:** assets published; field dry-run of `install.sh` still recommended on Linux host. | **Pass** (Windows field + multi-OS release assets); Unix install.sh field residual |
 | **Q5** | Checksums verified in install path | Install scripts verify SHA-256 against published `SHA256SUMS` by default (refuse if missing/mismatch); documented in user-guide | REL | `scripts/lib/sha256-verify.sh` + **D01/D02**; user-guide; field Pass after tagged release dry-run | **Pass** (code + contract tests); field dry-run remaining |
 
 ### 3.4 Security & privacy
@@ -279,10 +279,10 @@ Honest fill-in for planning (update as evidence lands):
 
 **Residual Must (blocks Ready):**
 
-1. **F5** — real agent host E2E on Win **and** Unix (install smoke + protocol are preparatory only)  
-2. **Q3** — tag `1.0.0` + CHANGELOG section  
-3. **Q4** — install dry-run from a real GitHub Release ([RELEASE_DRY_RUN.md](RELEASE_DRY_RUN.md))  
-4. **Q2** — re-confirm zero open P0 issues at tag time  
+1. **F5** — real agent host E2E on Win **and** Unix ([F5_VENDOR_DAY.md](F5_VENDOR_DAY.md))  
+2. **Q3** — tag `1.0.0` + CHANGELOG section (RC is `v0.1.1-rc.1`)  
+3. **Q2** — re-confirm zero open P0 issues at tag time  
+4. Optional: Unix `install.sh` field dry-run (Windows Q4 already recorded)
 
 **Should residual:** P1-1 signed tag dry-run; P1-2 PM signature; P1-4/P1-7 vendor product versions; human SEC countersign on X2.
 
