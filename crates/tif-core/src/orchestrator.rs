@@ -950,11 +950,7 @@ impl RunOrchestrator {
 
         // --- Stage 1: intensified Firebreak (higher attempt budget) ---
         plan.stage = FiveAlarmStage::Stage1Intensified;
-        let stage1_exclude: Vec<&str> = plan
-            .used_reviewer_ids
-            .iter()
-            .map(String::as_str)
-            .collect();
+        let stage1_exclude: Vec<&str> = plan.used_reviewer_ids.iter().map(String::as_str).collect();
         let stage1_reviewer = engine
             .selector()
             .select_excluding(policy.task_category, &stage1_exclude);
@@ -1107,11 +1103,8 @@ impl RunOrchestrator {
                 );
             }
 
-            let alt_exclude: Vec<&str> = plan
-                .used_reviewer_ids
-                .iter()
-                .map(String::as_str)
-                .collect();
+            let alt_exclude: Vec<&str> =
+                plan.used_reviewer_ids.iter().map(String::as_str).collect();
             let alt = engine
                 .selector()
                 .select_excluding(policy.task_category, &alt_exclude);

@@ -199,7 +199,10 @@ mod tests {
             .unwrap();
         assert_eq!(second.id, "b");
         let third = s
-            .select_excluding(TaskCategory::BugFix, &[first.id.as_str(), second.id.as_str()])
+            .select_excluding(
+                TaskCategory::BugFix,
+                &[first.id.as_str(), second.id.as_str()],
+            )
             .unwrap();
         assert_eq!(third.id, "c");
         assert!(s
