@@ -7,13 +7,19 @@ Versioning: see [docs/VERSIONING.md](docs/VERSIONING.md).
 
 ## [Unreleased]
 
+### Changed
+
+- Workspace package version **0.1.1** (clap `--version` matches next release tags)
+
 ### Added
 
 - **F5 vendor day checklist** — [docs/F5_VENDOR_DAY.md](docs/F5_VENDOR_DAY.md)
 
 ## [0.1.1-rc.1] - 2026-08-05
 
-Release candidate for **Q4 install dry-run** (GitHub Release assets + SHA256SUMS). Not a SemVer stability promise beyond current `0.1.x` candidate quality.
+Release candidate for **Q4 install dry-run** (GitHub Release assets + SHA256SUMS).
+
+> **Note:** Assets for tag `v0.1.1-rc.1` were built when the crate still reported **`tif 0.1.0`**. Identify that RC by **install tag + SHA256SUMS**, not by `tif --version` alone. Subsequent tags (after workspace version 0.1.1) report matching versions.
 
 ### Added (since 0.1.0 foundation)
 
@@ -27,7 +33,7 @@ Release candidate for **Q4 install dry-run** (GitHub Release assets + SHA256SUMS
 
 - Must **F5** real agent host E2E (see [F5_VENDOR_DAY.md](docs/F5_VENDOR_DAY.md))
 - Must **Q3** tag `v1.0.0` + dedicated CHANGELOG section
-- Must **Q4** complete [RELEASE_DRY_RUN.md](docs/RELEASE_DRY_RUN.md) against this or a later tag
+- Must **Q4** Unix `install.sh` field dry-run (Windows already recorded for this RC)
 - Optional P1-1 cosign when secrets configured
 
 ## [0.1.0] — 2026-08-04
