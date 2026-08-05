@@ -15,8 +15,8 @@ Related: [ROADMAP.md](ROADMAP.md) · [threat-model.md](security/threat-model.md)
 | Outcome | Rule |
 |---------|------|
 | **v1.0 Ready** | Every **Must (P0)** item is **Pass**, and no open **P0** residual risk |
-| **v1.0 Conditional** | All Must items Pass except explicitly waived **P1** items with signed waiver + expiry |
-| **Not Ready** | Any Must item is **Fail** or **Unknown** |
+| **v1.0 Conditional** | Every **Must (P0)** item is **Pass**, and one or more **Should (P1)** items are **Waived** (signed waiver + expiry). **Must items cannot be waived.** |
+| **Not Ready** | Any **Must (P0)** item is **Fail** or **Unknown** |
 
 ### Severity
 
@@ -105,7 +105,7 @@ _
 | **Q2** | No open P0 bugs | Issue tracker: zero open bugs labeled `P0` / `blocker` for v1.0 | EM | | Unknown |
 | **Q3** | Versioning discipline | SemVer `1.0.0`; schema + protocol compatibility documented; CHANGELOG has v1.0 section | REL | | Unknown |
 | **Q4** | Install without Rust | Clean machine (or VM) install via `scripts/install.sh` **and** `scripts/install.ps1` from a real GitHub Release asset; `tif --version` works | REL | | Unknown |
-| **Q5** | Checksums verified in install path | Install scripts verify SHA-256 against published `SHA256SUMS` (or documented manual verify is required and tested) | REL | | Unknown |
+| **Q5** | Checksums verified in install path | Install scripts verify SHA-256 against published `SHA256SUMS` by default (refuse if missing/mismatch); documented in user-guide | REL | Scripts on `main` enforce SUMS; **field Pass** still needs a real tagged release dry-run | In progress |
 
 ### 3.4 Security & privacy
 
@@ -131,9 +131,9 @@ _
 
 | ID | Criterion | Pass / Fail criteria | Owner | Evidence | Status |
 |----|-----------|----------------------|-------|----------|--------|
-| **P1-1** | **Signed releases** | Cosign or GPG signatures published with every `v*` release; verify steps in user-guide | REL | | Unknown |
+| **P1-1** | **Signed releases** | Cosign or GPG signatures published with every `v*` release; verify steps in user-guide | REL | Release workflow signs when `COSIGN_PRIVATE_KEY` secret set; user-guide documents verify. **Pass** after first signed tag dry-run | In progress |
 | **P1-2** | **Published package channel** | At least **one** of: Homebrew formula live, WinGet package live, or distro package — **or** explicit “binary-only v1.0” product decision signed by PM | REL / PM | | Unknown |
-| **P1-3** | Provider contract tests in CI | Mock + recorded/fixture HTTP contract tests for OpenAI-compatible response shape (no live keys required) | TL | | Unknown |
+| **P1-3** | Provider contract tests in CI | Mock + recorded/fixture HTTP contract tests for OpenAI-compatible response shape (no live keys required) | TL | `parse_chat_completion_content` / apply fixture tests in `providers` | Pass (automated) |
 | **P1-4** | Second agent adapter E2E | Second agent of the four launch set proven E2E on one OS | DX | | Unknown |
 | **P1-5** | aarch64 (or documented skip) | Release matrix cell green **or** “unsupported arch” listed in install docs | REL | | Unknown |
 | **P1-6** | Performance budgets recorded | Policy resolve p95 budget; assess on ≥10k-line diff budget; measured once on reference hardware | QA | | Unknown |

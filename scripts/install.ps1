@@ -2,10 +2,11 @@
 #
 # Usage:
 #   irm https://raw.githubusercontent.com/9thLevelSoftware/this-is-fine/main/scripts/install.ps1 | iex
-#   .\scripts\install.ps1 [-Version v0.1.0] [-FromSource]
+#   .\scripts\install.ps1 [-Version v0.1.0] [-FromSource] [-SkipVerify]
 param(
     [string]$Version = $(if ($env:TIF_VERSION) { $env:TIF_VERSION } else { "" }),
     [switch]$FromSource,
+    [switch]$SkipVerify,
     [string]$Prefix = $(if ($env:TIF_INSTALL_PREFIX) { $env:TIF_INSTALL_PREFIX } else { Join-Path $env:LOCALAPPDATA "this-is-fine" }),
     [string]$Repo = $(if ($env:TIF_REPO_SLUG) { $env:TIF_REPO_SLUG } else { "9thLevelSoftware/this-is-fine" })
 )
@@ -27,6 +28,44 @@ function Install-FromSource {
         if ($LASTEXITCODE -ne 0) { cargo install --git "https://github.com/$Repo.git" tif --root $Prefix }
     }
     Write-Host "Installed tif to $(Join-Path $BinDir 'tif.exe')"
+}
+
+function Get-FileSha256Hex([string]$Path) {
+    $hash = Get-FileHash -Algorithm SHA256 -Path $Path
+    return $hash.Hash.ToLowerInvariant()
+}
+
+function Test-ReleaseAsset {
+    param(
+        [string]$AssetPath,
+        [string]$AssetName,
+        [string]$Tag,
+        [string]$TmpDir
+    )
+    if ($SkipVerify) {
+        Write-Warning "Skipping SHA-256 verification (-SkipVerify)"
+        return
+    }
+    $sumsUrl = "https://github.com/$Repo/releases/download/$Tag/SHA256SUMS"
+    $sumsPath = Join-Path $TmpDir "SHA256SUMS"
+    Write-Host "Verifying $AssetName against $sumsUrl…"
+    try {
+        Invoke-WebRequest -Uri $sumsUrl -OutFile $sumsPath -UseBasicParsing
+    } catch {
+        throw "Could not download SHA256SUMS for $Tag; refusing to install without verification. Use -SkipVerify only if you accept the risk, or -FromSource."
+    }
+    $line = Get-Content $sumsPath | Where-Object {
+        $_ -match [regex]::Escape($AssetName) + '\s*$' -or $_ -match "\*$([regex]::Escape($AssetName))\s*$"
+    } | Select-Object -First 1
+    if (-not $line) {
+        throw "$AssetName not listed in SHA256SUMS"
+    }
+    $expected = ($line -split '\s+')[0].ToLowerInvariant()
+    $actual = Get-FileSha256Hex $AssetPath
+    if ($expected -ne $actual) {
+        throw "Checksum mismatch for $AssetName`n  expected: $expected`n  actual:   $actual"
+    }
+    Write-Host "SHA-256 OK ($actual)"
 }
 
 function Install-FromRelease {
@@ -53,6 +92,7 @@ function Install-FromRelease {
         Install-FromSource
         return
     }
+    Test-ReleaseAsset -AssetPath $zip -AssetName $asset -Tag $Version -TmpDir $tmp
     Expand-Archive -Path $zip -DestinationPath $tmp -Force
     $exe = Get-ChildItem -Path $tmp -Recurse -Filter "tif.exe" | Select-Object -First 1
     if (-not $exe) { throw "tif.exe not found in release archive" }

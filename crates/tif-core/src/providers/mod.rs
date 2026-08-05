@@ -304,6 +304,56 @@ pub mod openai_compatible {
     use super::*;
     use std::time::Instant;
 
+    /// Parse a chat-completions JSON body (fixture-testable; no network).
+    pub fn parse_chat_completion_content(
+        status: u16,
+        value: &serde_json::Value,
+    ) -> Result<(String, Option<u64>, Option<u64>)> {
+        if !(200..300).contains(&status) {
+            return Err(TifError::Other(format!(
+                "openai_compatible HTTP {status}: {value}"
+            )));
+        }
+        let content = value
+            .pointer("/choices/0/message/content")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| {
+                TifError::Other(
+                    "openai_compatible response missing choices[0].message.content".into(),
+                )
+            })?
+            .to_string();
+        let in_tok = value
+            .pointer("/usage/prompt_tokens")
+            .and_then(|v| v.as_u64());
+        let out_tok = value
+            .pointer("/usage/completion_tokens")
+            .and_then(|v| v.as_u64());
+        Ok((content, in_tok, out_tok))
+    }
+
+    /// Apply a parsed OpenAI chat response to an isolation tree (contract path).
+    pub fn apply_openai_chat_response(
+        task: &ReviewerTask,
+        status: u16,
+        value: &serde_json::Value,
+    ) -> Result<ReviewerPatch> {
+        let (content, in_tok, out_tok) = parse_chat_completion_content(status, value)?;
+        let tree = parse_reviewer_file_tree(&content)?;
+        let candidate = ensure_candidate_seeded(&task.isolation_root)?;
+        apply_file_tree_to_dir(&candidate, &tree, task.max_output_bytes)?;
+        Ok(ReviewerPatch {
+            reviewer_id: task.reviewer.id.clone(),
+            provider: "openai_compatible".into(),
+            model: task.reviewer.model.clone(),
+            candidate_root: candidate,
+            unified_diff: None,
+            notes: tree.notes,
+            input_tokens: in_tok,
+            output_tokens: out_tok,
+        })
+    }
+
     /// OpenAI-compatible HTTP chat completions backend.
     #[derive(Debug)]
     pub struct OpenAiCompatibleBackend;
@@ -353,42 +403,7 @@ pub mod openai_compatible {
             let value: serde_json::Value = resp
                 .into_json()
                 .map_err(|e| TifError::Other(format!("openai_compatible bad JSON: {e}")))?;
-            if !(200..300).contains(&status) {
-                return Err(TifError::Other(format!(
-                    "openai_compatible HTTP {status}: {value}"
-                )));
-            }
-
-            let content = value
-                .pointer("/choices/0/message/content")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| {
-                    TifError::Other(
-                        "openai_compatible response missing choices[0].message.content".into(),
-                    )
-                })?;
-
-            let tree = parse_reviewer_file_tree(content)?;
-            let candidate = ensure_candidate_seeded(&task.isolation_root)?;
-            apply_file_tree_to_dir(&candidate, &tree, task.max_output_bytes)?;
-
-            let in_tok = value
-                .pointer("/usage/prompt_tokens")
-                .and_then(|v| v.as_u64());
-            let out_tok = value
-                .pointer("/usage/completion_tokens")
-                .and_then(|v| v.as_u64());
-
-            Ok(ReviewerPatch {
-                reviewer_id: task.reviewer.id.clone(),
-                provider: "openai_compatible".into(),
-                model: task.reviewer.model.clone(),
-                candidate_root: candidate,
-                unified_diff: None,
-                notes: tree.notes,
-                input_tokens: in_tok,
-                output_tokens: out_tok,
-            })
+            apply_openai_chat_response(task, status, &value)
         }
 
         fn probe(
@@ -939,5 +954,60 @@ mod tests {
         let reg = BackendRegistry::new();
         assert!(backend_for_provider(&reg, "openai").is_ok());
         assert!(backend_for_provider(&reg, "openai_compatible").is_ok());
+    }
+
+    #[test]
+    #[cfg(feature = "provider-openai-compatible")]
+    fn openai_chat_fixture_contract() {
+        let fixture = r#"{
+          "id": "chatcmpl-test",
+          "choices": [{
+            "index": 0,
+            "message": {
+              "role": "assistant",
+              "content": "{\"files\":[{\"path\":\"src/lib.rs\",\"content\":\"pub fn ok() {}\\n\"}],\"delete\":[],\"notes\":[\"minimal\"]}"
+            },
+            "finish_reason": "stop"
+          }],
+          "usage": { "prompt_tokens": 12, "completion_tokens": 34 }
+        }"#;
+        let value: serde_json::Value = serde_json::from_str(fixture).unwrap();
+        let (content, in_t, out_t) =
+            openai_compatible::parse_chat_completion_content(200, &value).unwrap();
+        assert!(content.contains("src/lib.rs"));
+        assert_eq!(in_t, Some(12));
+        assert_eq!(out_t, Some(34));
+        assert!(openai_compatible::parse_chat_completion_content(500, &value).is_err());
+        assert!(openai_compatible::parse_chat_completion_content(
+            200,
+            &serde_json::json!({"choices": []})
+        )
+        .is_err());
+
+        let dir = tempdir().unwrap();
+        let iso = dir.path().join("iso");
+        std::fs::create_dir_all(iso.join("src")).unwrap();
+        std::fs::write(iso.join("src/lib.rs"), b"old").unwrap();
+        let task = sample_task(iso);
+        let patch = openai_compatible::apply_openai_chat_response(&task, 200, &value).unwrap();
+        assert!(patch.candidate_root.join("src/lib.rs").is_file());
+        let body = std::fs::read_to_string(patch.candidate_root.join("src/lib.rs")).unwrap();
+        assert!(body.contains("pub fn ok"));
+        assert_eq!(patch.notes, vec!["minimal".to_string()]);
+    }
+
+    #[test]
+    #[cfg(feature = "provider-anthropic")]
+    fn anthropic_fixture_extracts_text() {
+        let value = serde_json::json!({
+            "content": [{"type": "text", "text": "{\"files\":[],\"delete\":[],\"notes\":[\"n\"]}"}],
+            "usage": {"input_tokens": 1, "output_tokens": 2}
+        });
+        let text = value
+            .pointer("/content/0/text")
+            .and_then(|v| v.as_str())
+            .unwrap();
+        let tree = parse_reviewer_file_tree(text).unwrap();
+        assert_eq!(tree.notes, vec!["n".to_string()]);
     }
 }

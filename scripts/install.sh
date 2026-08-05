@@ -4,12 +4,13 @@
 #
 # Usage:
 #   curl -fsSL https://raw.githubusercontent.com/9thLevelSoftware/this-is-fine/main/scripts/install.sh | bash
-#   ./scripts/install.sh [--version v0.1.0] [--from-source]
+#   ./scripts/install.sh [--version v0.1.0] [--from-source] [--skip-verify]
 set -euo pipefail
 
 REPO="${TIF_REPO_SLUG:-9thLevelSoftware/this-is-fine}"
 VERSION="${TIF_VERSION:-}"
 FROM_SOURCE=0
+SKIP_VERIFY=0
 PREFIX="${TIF_INSTALL_PREFIX:-${HOME}/.local}"
 BIN_DIR="${PREFIX}/bin"
 
@@ -18,10 +19,16 @@ usage() {
 install.sh — install the tif CLI
 
 Options:
-  --version VER   Release tag (default: latest)
-  --from-source   Build with cargo install (requires Rust)
-  --prefix DIR    Install prefix (default: ~/.local)
-  -h, --help      Show help
+  --version VER     Release tag (default: latest)
+  --from-source     Build with cargo install (requires Rust)
+  --skip-verify     Skip SHA-256 verification (not recommended)
+  --prefix DIR      Install prefix (default: ~/.local)
+  -h, --help        Show help
+
+Verification (default for release installs):
+  Downloads SHA256SUMS from the same release and checks the asset digest.
+  Optional: set TIF_REQUIRE_COSIGN=1 to also require cosign verify-blob when
+  a .sig asset is published (needs cosign on PATH).
 EOF
 }
 
@@ -29,6 +36,7 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --version) VERSION="$2"; shift 2 ;;
     --from-source) FROM_SOURCE=1; shift ;;
+    --skip-verify) SKIP_VERIFY=1; shift ;;
     --prefix) PREFIX="$2"; BIN_DIR="${PREFIX}/bin"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) echo "unknown arg: $1" >&2; usage; exit 1 ;;
@@ -70,6 +78,77 @@ install_from_source() {
   echo "Installed tif to ${BIN_DIR}/tif"
 }
 
+sha256_file() {
+  local f="$1"
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$f" | awk '{print $1}'
+  else
+    shasum -a 256 "$f" | awk '{print $1}'
+  fi
+}
+
+verify_asset() {
+  local asset_path="$1"
+  local asset_name="$2"
+  local version="$3"
+  local tmp="$4"
+  local sums_url sums expected actual
+
+  if [[ "${SKIP_VERIFY}" -eq 1 ]]; then
+    echo "WARNING: skipping SHA-256 verification (--skip-verify)" >&2
+    return 0
+  fi
+
+  sums_url="https://github.com/${REPO}/releases/download/${version}/SHA256SUMS"
+  sums="${tmp}/SHA256SUMS"
+  echo "Verifying ${asset_name} against ${sums_url}…"
+  if ! curl -fsSL "${sums_url}" -o "${sums}"; then
+    echo "ERROR: could not download SHA256SUMS for ${version}; refusing to install without verification." >&2
+    echo "Re-run with --skip-verify only if you accept the risk, or use --from-source." >&2
+    return 1
+  fi
+
+  # Lines look like: <hex>  <filename>  or <hex> *filename
+  expected="$(grep -E "[[:space:]]${asset_name}\$" "${sums}" | head -n1 | awk '{print $1}')"
+  if [[ -z "${expected}" ]]; then
+    # Try matching basename only if path-style
+    expected="$(awk -v n="${asset_name}" '$2 == n || $2 == "*"n || $NF == n { print $1; exit }' "${sums}")"
+  fi
+  if [[ -z "${expected}" ]]; then
+    echo "ERROR: ${asset_name} not listed in SHA256SUMS" >&2
+    return 1
+  fi
+  actual="$(sha256_file "${asset_path}")"
+  if [[ "${actual}" != "${expected}" ]]; then
+    echo "ERROR: checksum mismatch for ${asset_name}" >&2
+    echo "  expected: ${expected}" >&2
+    echo "  actual:   ${actual}" >&2
+    return 1
+  fi
+  echo "SHA-256 OK (${actual})"
+
+  if [[ "${TIF_REQUIRE_COSIGN:-0}" == "1" ]]; then
+    if ! command -v cosign >/dev/null 2>&1; then
+      echo "ERROR: TIF_REQUIRE_COSIGN=1 but cosign not on PATH" >&2
+      return 1
+    fi
+    local sig_url sig
+    sig_url="https://github.com/${REPO}/releases/download/${version}/${asset_name}.sig"
+    sig="${tmp}/${asset_name}.sig"
+    if ! curl -fsSL "${sig_url}" -o "${sig}"; then
+      echo "ERROR: signature ${asset_name}.sig not found for this release" >&2
+      return 1
+    fi
+    # Public key optional: COSIGN_PUBLIC_KEY path or keyless verify if configured at release.
+    if [[ -n "${COSIGN_PUBLIC_KEY:-}" ]]; then
+      cosign verify-blob --key "${COSIGN_PUBLIC_KEY}" --signature "${sig}" "${asset_path}"
+    else
+      echo "WARNING: signature file present but COSIGN_PUBLIC_KEY unset; downloaded .sig only" >&2
+      echo "Set COSIGN_PUBLIC_KEY to a PEM public key to enforce cosign verify-blob." >&2
+    fi
+  fi
+}
+
 install_from_release() {
   local target asset url tmp
   target="$(detect_target)"
@@ -91,6 +170,10 @@ install_from_release() {
     rm -rf "${tmp}"
     install_from_source
     return
+  fi
+  if ! verify_asset "${tmp}/${asset}" "${asset}" "${VERSION}" "${tmp}"; then
+    rm -rf "${tmp}"
+    exit 1
   fi
   tar -xzf "${tmp}/${asset}" -C "${tmp}"
   # Archive layout: tif-<target>/tif
