@@ -14,7 +14,7 @@ Automated coverage: `tif_core::adapter_conformance` + USER_TESTING **B12** (life
 | Gemini CLI | *context generators* | workspace `0.1.0` | Win + Unix | Protocol | Protocol-ready — **not F5** |
 | OpenCode | *plugin hooks* | workspace `0.1.0` | Win + Unix | Protocol | Protocol-ready — **not F5** |
 
-**Vendor product E2E (GUI / real agent binary):** Unix Claude Code and Windows OpenCode slices are recorded above (2026-08-05). A same-agent cross-OS run is still required before Must F5 can pass.
+**Vendor product E2E (GUI / real agent binary):** Unix Claude Code and Windows OpenCode slices recorded 2026-08-05. **Must F5 accepted** as split-agent Win+Unix (operator: close enough; same-agent cross-OS is optional Should).
 
 ## How to update
 
