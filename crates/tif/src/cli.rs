@@ -127,12 +127,21 @@ pub enum Commands {
     Inspect,
     /// Compact containment status.
     Status,
-    /// Five-Alarm escalation helpers (post-failure only).
+    /// Five-Alarm staged recovery (post-failure only; design §8.2).
     #[command(name = "five-alarm")]
     FiveAlarm {
-        /// Print staged recovery plan.
+        /// Print staged recovery plan outline.
         #[arg(long)]
         plan: bool,
+        /// Run Five-Alarm staged recovery for an existing out-of-control run.
+        #[arg(long)]
+        run: Option<String>,
+        /// Authorize apply of the smallest verified candidate (default: config auto_apply_firebreak).
+        #[arg(long)]
+        apply: bool,
+        /// Note historical risk (still insufficient without current containment failure).
+        #[arg(long)]
+        historical_risk: bool,
     },
     /// Interactive TUI (keyboard-driven; every action has a CLI equivalent).
     Tui,

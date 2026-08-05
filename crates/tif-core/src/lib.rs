@@ -41,7 +41,9 @@ pub use error::{Result, TifError};
 pub use fire_level::FireLevel;
 pub use firebreak::{
     fail_safe_guard, BackendGenerateRequest, BackendGenerateResult, FirebreakEngine,
-    FirebreakOutcome, FirebreakRequest, FiveAlarmPlan, IsolatedApplyRequest,
+    FirebreakOutcome, FirebreakRequest, FiveAlarmCandidate, FiveAlarmCandidateKind, FiveAlarmPlan,
+    FiveAlarmRunOptions, FiveAlarmRunResult, FiveAlarmStage, FiveAlarmTimelineEntry,
+    IsolatedApplyRequest,
 };
 pub use inspector::{find_repo_root, RepositoryInspector};
 pub use isolation::{
@@ -57,8 +59,9 @@ pub use policy::{ContainmentPolicy, PolicyCompileRequest, PolicyCompiler};
 pub use pressure::{PressureEngine, PressureScenario, BASELINE_CONTAINMENT_PROMPT};
 pub use protocol::{JsonResponse, PROTOCOL_VERSION};
 pub use providers::{
-    backend_for_provider, build_reviewer_context, BackendRegistry, ContextBuildRequest,
-    ProbeResult, ReviewerBackend, ReviewerPatch, ReviewerTask,
+    assert_clean_room_package, backend_for_provider, build_reviewer_context, BackendRegistry,
+    ContextBuildRequest, ProbeResult, ReviewerBackend, ReviewerInvocationMode, ReviewerPatch,
+    ReviewerTask,
 };
 pub use reviewer::{ReviewerSelector, ReviewerStats, SelectedReviewer};
 pub use scoring::{

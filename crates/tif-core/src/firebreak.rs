@@ -12,11 +12,12 @@ use std::path::{Path, PathBuf};
 use crate::config::ReviewerConfig;
 use crate::credentials::resolve_credential_opt;
 use crate::error::{Result, TifError};
+use crate::fire_level::FireLevel;
 use crate::isolation::{apply_verified_candidate, open_isolation, IsolationSession, Isolator};
 use crate::policy::ContainmentPolicy;
 use crate::providers::{
     backend_for_provider, build_reviewer_context, BackendRegistry, ContextBuildRequest,
-    ReviewerPatch, ReviewerTask,
+    ReviewerInvocationMode, ReviewerPatch, ReviewerTask,
 };
 use crate::reviewer::{ReviewerSelector, SelectedReviewer};
 use crate::scoring::{
@@ -96,9 +97,53 @@ pub struct BackendGenerateRequest {
     pub task_text: Option<String>,
     pub acceptance_criteria: Option<String>,
     /// Source/diff body; only sent if selected reviewer allows egress.
+    /// Forbidden for [`ReviewerInvocationMode::CleanRoom`].
     pub source_or_diff: Option<String>,
     pub verification_plan_summary: Option<String>,
     pub max_output_bytes: u64,
+    /// Prefer a specific authorized reviewer id (must be in the pool).
+    pub preferred_reviewer_id: Option<String>,
+    /// Exclude reviewer ids already used (Five-Alarm Stage 2).
+    pub exclude_reviewer_ids: Vec<String>,
+    /// Framing mode (standard / intensified / clean-room).
+    pub mode: ReviewerInvocationMode,
+    /// Structured failure summary (Five-Alarm).
+    pub failure_summary: Option<String>,
+    /// Previous implementation code — clean-room rejects non-empty values.
+    pub prior_implementation_code: Option<String>,
+}
+
+impl BackendGenerateRequest {
+    /// Standard Firebreak generation request (Phase 1/2 defaults).
+    pub fn standard(
+        run_id: impl Into<String>,
+        policy: ContainmentPolicy,
+        source_root: PathBuf,
+        state_dir: PathBuf,
+        original_metrics: DiffMetrics,
+        original_score: ScoreResult,
+        original_floor: CorrectnessFloor,
+    ) -> Self {
+        Self {
+            run_id: run_id.into(),
+            policy,
+            source_root,
+            state_dir,
+            original_metrics,
+            original_score,
+            original_floor,
+            task_text: None,
+            acceptance_criteria: None,
+            source_or_diff: None,
+            verification_plan_summary: None,
+            max_output_bytes: 8_000_000,
+            preferred_reviewer_id: None,
+            exclude_reviewer_ids: Vec::new(),
+            mode: ReviewerInvocationMode::Standard,
+            failure_summary: None,
+            prior_implementation_code: None,
+        }
+    }
 }
 
 /// Result of backend generation (always original-preserving).
@@ -160,7 +205,19 @@ impl FirebreakEngine {
             ));
         }
 
-        let selected = self.selector.select(req.policy.task_category)?;
+        let selected = if let Some(ref id) = req.preferred_reviewer_id {
+            self.selector.select_by_id(id)?
+        } else {
+            {
+                let exclude: Vec<&str> = req
+                    .exclude_reviewer_ids
+                    .iter()
+                    .map(String::as_str)
+                    .collect();
+                self.selector
+                    .select_excluding(req.policy.task_category, &exclude)?
+            }
+        };
         let cfg = self.reviewer_config(&selected.id).cloned().ok_or_else(|| {
             TifError::UnauthorizedReviewer(format!(
                 "selected reviewer `{}` missing from pool",
@@ -170,7 +227,7 @@ impl FirebreakEngine {
 
         let backend = backend_for_provider(&self.registry, &cfg.provider)?;
 
-        // Egress enforced in context builder when source is present.
+        // Clean-room / intensified context; egress enforced when source is present.
         let context = build_reviewer_context(&ContextBuildRequest {
             reviewer: &cfg,
             policy: &req.policy,
@@ -180,11 +237,19 @@ impl FirebreakEngine {
             original_metrics: Some(&req.original_metrics),
             source_or_diff: req.source_or_diff.as_deref(),
             verification_plan_summary: req.verification_plan_summary.as_deref(),
+            mode: req.mode,
+            failure_summary: req.failure_summary.as_deref(),
+            prior_implementation_code: req.prior_implementation_code.as_deref(),
         })?;
 
         let credential = resolve_credential_opt(cfg.credential_ref.as_deref())?;
 
-        let session_id = format!("fb-{}", &uuid::Uuid::new_v4().to_string()[..8]);
+        let prefix = match req.mode {
+            ReviewerInvocationMode::CleanRoom => "fa-cr",
+            ReviewerInvocationMode::Intensified => "fa-i",
+            ReviewerInvocationMode::Standard => "fb",
+        };
+        let session_id = format!("{prefix}-{}", &uuid::Uuid::new_v4().to_string()[..8]);
         let (isolator, mut session) =
             open_isolation(&req.source_root, &req.state_dir, &session_id)?;
 
@@ -232,6 +297,11 @@ impl FirebreakEngine {
         };
 
         // Phase 1: candidate generated but not re-verified → not ready to apply.
+        let mode_label = match req.mode {
+            ReviewerInvocationMode::Standard => "standard",
+            ReviewerInvocationMode::Intensified => "intensified",
+            ReviewerInvocationMode::CleanRoom => "clean-room",
+        };
         let outcome = FirebreakOutcome {
             success: true,
             applied: false,
@@ -239,11 +309,11 @@ impl FirebreakEngine {
             requires_approval: false,
             simulated: false,
             reviewer_id: Some(patch.reviewer_id.clone()),
-            candidate_id: Some(format!("fb-{}", patch.reviewer_id)),
+            candidate_id: Some(format!("fb-{mode_label}-{}", patch.reviewer_id)),
             candidate_score: None,
             candidate_metrics: None,
             message: format!(
-                "reviewer `{}` produced candidate at {}; re-verify before apply (not applied)",
+                "reviewer `{}` ({mode_label}) produced candidate at {}; re-verify before apply (not applied)",
                 patch.reviewer_id,
                 patch.candidate_root.display()
             ),
@@ -890,26 +960,304 @@ fn paths_match_sensitive(patterns: &[String], paths: &[String]) -> bool {
     })
 }
 
-/// Five-Alarm staged recovery outline (scaffolded).
+/// Five-Alarm recovery stage (design §8.2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FiveAlarmStage {
+    /// Not started / outline only.
+    Idle,
+    /// Gate: require current containment failure (historical alone insufficient).
+    Gate,
+    /// Stage 1: intensified Firebreak (higher attempts, stricter wording).
+    Stage1Intensified,
+    /// Stage 2: preserve Stage 1 candidate; select a different authorized model.
+    Stage2PreserveReselect,
+    /// Stage 3: clean-room on original state + task/policy/failure summary (no prior code).
+    Stage3CleanRoom,
+    /// Stage 4: verify all candidates; apply smallest verified; retain rejects.
+    Stage4VerifySelect,
+    /// Terminal success (winner applied or selected without apply).
+    Complete,
+    /// Terminal abort (gate failed, no usable path, or fail-safe).
+    Aborted,
+}
+
+impl FiveAlarmStage {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            FiveAlarmStage::Idle => "idle",
+            FiveAlarmStage::Gate => "gate",
+            FiveAlarmStage::Stage1Intensified => "stage1_intensified",
+            FiveAlarmStage::Stage2PreserveReselect => "stage2_preserve_reselect",
+            FiveAlarmStage::Stage3CleanRoom => "stage3_clean_room",
+            FiveAlarmStage::Stage4VerifySelect => "stage4_verify_select",
+            FiveAlarmStage::Complete => "complete",
+            FiveAlarmStage::Aborted => "aborted",
+        }
+    }
+}
+
+/// Kind of Five-Alarm candidate retained for ranking / rollback.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FiveAlarmCandidateKind {
+    Intensified,
+    CleanRoom,
+    Original,
+}
+
+/// A candidate produced or considered during Five-Alarm recovery.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FiveAlarmCandidate {
+    pub id: String,
+    pub kind: FiveAlarmCandidateKind,
+    pub reviewer_id: Option<String>,
+    pub isolation_session_id: Option<String>,
+    pub candidate_path: Option<PathBuf>,
+    pub metrics: Option<DiffMetrics>,
+    pub score: Option<ScoreResult>,
+    pub floor_passed: bool,
+    pub within_containment: bool,
+    pub verified: bool,
+    /// Retained during rollback period when not applied.
+    pub retained_for_rollback: bool,
+    pub applied: bool,
+    pub message: String,
+}
+
+/// Audit timeline entry for a Five-Alarm stage transition or action.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FiveAlarmTimelineEntry {
+    pub stage: FiveAlarmStage,
+    pub at: String,
+    pub message: String,
+    pub reviewer_id: Option<String>,
+    pub candidate_id: Option<String>,
+}
+
+/// Five-Alarm staged recovery plan and live state machine (design §8.2).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FiveAlarmPlan {
+    /// Human-readable outline steps (for `tif five-alarm --plan`).
     pub steps: Vec<String>,
+    pub stage: FiveAlarmStage,
+    /// True only when the **current** task has a concrete containment failure.
+    pub current_containment_failure: bool,
+    /// True when the caller tried to escalate on historical risk alone.
+    pub historical_risk_only: bool,
+    pub timeline: Vec<FiveAlarmTimelineEntry>,
+    pub candidates: Vec<FiveAlarmCandidate>,
+    pub used_reviewer_ids: Vec<String>,
+    pub winner_id: Option<String>,
+    pub message: String,
+    pub applied: bool,
+    pub original_preserved: bool,
+    /// Isolation session of the applied winner (if any).
+    pub applied_session_id: Option<String>,
 }
 
 impl FiveAlarmPlan {
+    /// Static outline for CLI `--plan` (no escalation).
     pub fn staged_recovery() -> Self {
         Self {
-            steps: vec![
-                "Run intensified Firebreak on current verified implementation".into(),
-                "If still out of containment, preserve as candidate".into(),
-                "Select another authorized model".into(),
-                "Clean-room model gets original state, task, criteria, policy, verification plan, failure summary — not previous implementation code".into(),
-                "Verify all candidates against the same correctness floor".into(),
-                "Apply the smallest verified candidate".into(),
-                "Preserve rejected candidates during rollback period".into(),
-            ],
+            steps: Self::outline_steps(),
+            stage: FiveAlarmStage::Idle,
+            current_containment_failure: false,
+            historical_risk_only: false,
+            timeline: Vec::new(),
+            candidates: Vec::new(),
+            used_reviewer_ids: Vec::new(),
+            winner_id: None,
+            message: "Five-Alarm staged recovery outline (not escalated)".into(),
+            applied: false,
+            original_preserved: true,
+            applied_session_id: None,
         }
     }
+
+    fn outline_steps() -> Vec<String> {
+        vec![
+            "Gate: require current containment failure (historical risk alone insufficient)".into(),
+            "Stage 1: intensified Firebreak on current verified implementation (higher attempts, stricter wording)".into(),
+            "Stage 2: if still out of containment, preserve as candidate; select another authorized model".into(),
+            "Stage 3: clean-room model gets original state, task, criteria, policy, verification plan, failure summary — not previous implementation code".into(),
+            "Stage 4: verify all candidates against the same correctness floor".into(),
+            "Apply the smallest verified candidate".into(),
+            "Preserve rejected candidates during rollback period".into(),
+        ]
+    }
+
+    /// Begin escalation. Historical risk alone is insufficient.
+    pub fn begin_escalation(
+        current_containment_failure: bool,
+        historical_risk_noted: bool,
+    ) -> Result<Self> {
+        let mut plan = Self {
+            steps: Self::outline_steps(),
+            stage: FiveAlarmStage::Gate,
+            current_containment_failure,
+            historical_risk_only: historical_risk_noted && !current_containment_failure,
+            timeline: Vec::new(),
+            candidates: Vec::new(),
+            used_reviewer_ids: Vec::new(),
+            winner_id: None,
+            message: String::new(),
+            applied: false,
+            original_preserved: true,
+            applied_session_id: None,
+        };
+
+        // Design §8.1: historical risk alone is insufficient.
+        if !current_containment_failure {
+            plan.stage = FiveAlarmStage::Aborted;
+            plan.message = if historical_risk_noted {
+                "Five-Alarm refused: historical risk alone is insufficient; current containment failure required"
+                    .into()
+            } else {
+                "Five-Alarm refused: no current containment failure (escalation-only)".into()
+            };
+            plan.push_timeline(FiveAlarmStage::Gate, plan.message.clone(), None, None);
+            return Err(TifError::FiveAlarmInitialForbidden);
+        }
+
+        // Also enforce FireLevel gate for consistency.
+        let _ = FireLevel::escalate_to_five_alarm(true)?;
+
+        plan.push_timeline(
+            FiveAlarmStage::Gate,
+            "current containment failure confirmed; escalating to Five-Alarm",
+            None,
+            None,
+        );
+        plan.stage = FiveAlarmStage::Stage1Intensified;
+        plan.message = "Five-Alarm gate passed; entering Stage 1 (intensified Firebreak)".into();
+        plan.push_timeline(
+            FiveAlarmStage::Stage1Intensified,
+            plan.message.clone(),
+            None,
+            None,
+        );
+        Ok(plan)
+    }
+
+    fn push_timeline(
+        &mut self,
+        stage: FiveAlarmStage,
+        message: impl Into<String>,
+        reviewer_id: Option<String>,
+        candidate_id: Option<String>,
+    ) {
+        self.push_timeline_pub(stage, message, reviewer_id, candidate_id);
+    }
+
+    /// Append a timeline entry (used by orchestrator stage transitions).
+    pub fn push_timeline_pub(
+        &mut self,
+        stage: FiveAlarmStage,
+        message: impl Into<String>,
+        reviewer_id: Option<String>,
+        candidate_id: Option<String>,
+    ) {
+        self.timeline.push(FiveAlarmTimelineEntry {
+            stage,
+            at: chrono::Utc::now().to_rfc3339(),
+            message: message.into(),
+            reviewer_id,
+            candidate_id,
+        });
+    }
+
+    /// Build a structured failure summary for clean-room / intensified context.
+    pub fn build_failure_summary(
+        original_score: &ScoreResult,
+        original_metrics: &DiffMetrics,
+        prior_firebreak: Option<&FirebreakOutcome>,
+        stage1: Option<&FiveAlarmCandidate>,
+    ) -> String {
+        let mut s = String::new();
+        s.push_str("current_task_containment_failure: true\n");
+        s.push_str(&format!(
+            "original_within_containment: {}\n",
+            original_score.within_containment
+        ));
+        s.push_str(&format!(
+            "original_score: {:.2} disqualified={}\n",
+            original_score.score, original_score.disqualified
+        ));
+        if !original_score.hard_limit_violations.is_empty() {
+            s.push_str(&format!(
+                "hard_limit_violations: {:?}\n",
+                original_score.hard_limit_violations
+            ));
+        }
+        s.push_str(&format!(
+            "metrics: files_added={} lines_added={} deps_added={} abstractions={}\n",
+            original_metrics.files_added,
+            original_metrics.lines_added,
+            original_metrics.runtime_dependencies_added,
+            original_metrics.abstractions_added
+        ));
+        if let Some(fb) = prior_firebreak {
+            s.push_str(&format!(
+                "prior_firebreak: success={} applied={} ready={} msg={}\n",
+                fb.success, fb.applied, fb.candidate_ready, fb.message
+            ));
+        }
+        if let Some(c) = stage1 {
+            s.push_str(&format!(
+                "stage1_candidate: id={} verified={} within_containment={} reviewer={:?} msg={}\n",
+                c.id, c.verified, c.within_containment, c.reviewer_id, c.message
+            ));
+        }
+        s.push_str(
+            "instruction: re-implement with maximum restraint; do not request prior patch content.\n",
+        );
+        s
+    }
+
+    /// Select the smallest verified in-containment candidate (excluding original).
+    pub fn select_smallest_verified_winner(&self) -> Option<&FiveAlarmCandidate> {
+        self.candidates
+            .iter()
+            .filter(|c| {
+                c.kind != FiveAlarmCandidateKind::Original
+                    && c.verified
+                    && c.floor_passed
+                    && c.within_containment
+                    && c.score.as_ref().is_some_and(|s| !s.disqualified)
+            })
+            .min_by(|a, b| {
+                let sa = a.score.as_ref().map(|s| s.score).unwrap_or(f64::MAX);
+                let sb = b.score.as_ref().map(|s| s.score).unwrap_or(f64::MAX);
+                sa.partial_cmp(&sb).unwrap_or(std::cmp::Ordering::Equal)
+            })
+    }
+}
+
+/// Options for a Five-Alarm recovery run.
+#[derive(Debug, Clone)]
+pub struct FiveAlarmRunOptions {
+    pub authorize_apply: bool,
+    pub user_approved: bool,
+    /// When true, treat historical risk as noted (still insufficient alone).
+    pub historical_risk_noted: bool,
+}
+
+impl Default for FiveAlarmRunOptions {
+    fn default() -> Self {
+        Self {
+            authorize_apply: true,
+            user_approved: false,
+            historical_risk_noted: false,
+        }
+    }
+}
+
+/// Result of a full or partial Five-Alarm recovery.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FiveAlarmRunResult {
+    pub plan: FiveAlarmPlan,
+    pub firebreak: Option<FirebreakOutcome>,
 }
 
 /// Ensure no unverified candidate replaces a known-good implementation.
@@ -1109,22 +1457,18 @@ mod tests {
         let scorer = SimplicityScorer::new(policy.weights.clone(), policy.limits.clone());
         let score = scorer.score(&metrics, &CorrectnessFloor::all_pass());
 
-        let result = engine
-            .generate_with_backend(BackendGenerateRequest {
-                run_id: "gen1".into(),
-                policy,
-                source_root: source.clone(),
-                state_dir: paths.state_dir.clone(),
-                original_metrics: metrics,
-                original_score: score,
-                original_floor: CorrectnessFloor::all_pass(),
-                task_text: Some("shrink".into()),
-                acceptance_criteria: None,
-                source_or_diff: None,
-                verification_plan_summary: None,
-                max_output_bytes: 1_000_000,
-            })
-            .unwrap();
+        let mut gen_req = BackendGenerateRequest::standard(
+            "gen1",
+            policy,
+            source.clone(),
+            paths.state_dir.clone(),
+            metrics,
+            score,
+            CorrectnessFloor::all_pass(),
+        );
+        gen_req.task_text = Some("shrink".into());
+        gen_req.max_output_bytes = 1_000_000;
+        let result = engine.generate_with_backend(gen_req).unwrap();
 
         assert!(result.outcome.original_preserved);
         assert!(!result.outcome.applied);
@@ -1406,5 +1750,233 @@ mod tests {
             (abs_score.score - orig_abs_score.score).abs() < f64::EPSILON
                 || abs_score.score >= orig_abs_score.score
         );
+    }
+
+    // --- Phase 3: Five-Alarm staged recovery ---
+
+    fn ok_score(score: f64) -> ScoreResult {
+        ScoreResult {
+            correctness_passed: true,
+            disqualified: false,
+            score,
+            hard_limit_violations: vec![],
+            floor_failures: vec![],
+            within_containment: true,
+            breakdown: Default::default(),
+        }
+    }
+
+    #[test]
+    fn five_alarm_historical_risk_alone_insufficient() {
+        let err = FiveAlarmPlan::begin_escalation(false, true).unwrap_err();
+        assert!(matches!(err, TifError::FiveAlarmInitialForbidden));
+        let err2 = FiveAlarmPlan::begin_escalation(false, false).unwrap_err();
+        assert!(matches!(err2, TifError::FiveAlarmInitialForbidden));
+    }
+
+    #[test]
+    fn five_alarm_gate_passes_on_current_failure() {
+        let plan = FiveAlarmPlan::begin_escalation(true, true).unwrap();
+        assert!(plan.current_containment_failure);
+        assert!(!plan.historical_risk_only);
+        assert_eq!(plan.stage, FiveAlarmStage::Stage1Intensified);
+        assert!(!plan.timeline.is_empty());
+        assert!(plan
+            .timeline
+            .iter()
+            .any(|e| e.stage == FiveAlarmStage::Gate));
+    }
+
+    #[test]
+    fn five_alarm_outline_lists_all_stages() {
+        let outline = FiveAlarmPlan::staged_recovery();
+        assert_eq!(outline.stage, FiveAlarmStage::Idle);
+        assert!(outline.steps.len() >= 6);
+        assert!(outline.steps.iter().any(|s| s.contains("intensified")));
+        assert!(outline
+            .steps
+            .iter()
+            .any(|s| s.contains("clean-room") || s.contains("Clean-room")));
+        assert!(outline.steps.iter().any(|s| s.contains("smallest")));
+    }
+
+    #[test]
+    fn five_alarm_select_smallest_verified_winner() {
+        let mut plan = FiveAlarmPlan::begin_escalation(true, false).unwrap();
+        plan.candidates.push(FiveAlarmCandidate {
+            id: "big".into(),
+            kind: FiveAlarmCandidateKind::Intensified,
+            reviewer_id: Some("r1".into()),
+            isolation_session_id: None,
+            candidate_path: None,
+            metrics: None,
+            score: Some(ok_score(80.0)),
+            floor_passed: true,
+            within_containment: true,
+            verified: true,
+            retained_for_rollback: true,
+            applied: false,
+            message: "big".into(),
+        });
+        plan.candidates.push(FiveAlarmCandidate {
+            id: "small".into(),
+            kind: FiveAlarmCandidateKind::CleanRoom,
+            reviewer_id: Some("r2".into()),
+            isolation_session_id: None,
+            candidate_path: None,
+            metrics: None,
+            score: Some(ok_score(20.0)),
+            floor_passed: true,
+            within_containment: true,
+            verified: true,
+            retained_for_rollback: true,
+            applied: false,
+            message: "small".into(),
+        });
+        plan.candidates.push(FiveAlarmCandidate {
+            id: "unverified".into(),
+            kind: FiveAlarmCandidateKind::Intensified,
+            reviewer_id: Some("r3".into()),
+            isolation_session_id: None,
+            candidate_path: None,
+            metrics: None,
+            score: Some(ok_score(5.0)),
+            floor_passed: false,
+            within_containment: true,
+            verified: false,
+            retained_for_rollback: true,
+            applied: false,
+            message: "bad".into(),
+        });
+        let w = plan.select_smallest_verified_winner().unwrap();
+        assert_eq!(w.id, "small");
+    }
+
+    #[test]
+    fn five_alarm_failure_summary_has_no_patch_body() {
+        let metrics = DiffMetrics {
+            lines_added: 50,
+            files_added: 2,
+            runtime_dependencies_added: 1,
+            ..Default::default()
+        };
+        let scorer = SimplicityScorer::new(
+            crate::config::SimplicityWeights::default(),
+            SimplicityLimits {
+                new_runtime_dependencies: Some(0),
+                ..Default::default()
+            },
+        );
+        let score = scorer.score(&metrics, &CorrectnessFloor::all_pass());
+        let summary = FiveAlarmPlan::build_failure_summary(&score, &metrics, None, None);
+        assert!(summary.contains("current_task_containment_failure"));
+        assert!(!summary.contains("fn bloated"));
+        assert!(!summary.contains("diff --git"));
+    }
+
+    #[test]
+    #[cfg(feature = "provider-mock")]
+    fn intensified_generate_uses_mode_and_preserves_source() {
+        use crate::config::RepoPaths;
+
+        let dir = tempdir().unwrap();
+        let source = dir.path().join("src_repo");
+        fs::create_dir_all(source.join("src")).unwrap();
+        fs::write(source.join("src/lib.rs"), b"pub fn f() {}\n").unwrap();
+        fs::write(source.join("KEEP.txt"), b"original").unwrap();
+        let paths = RepoPaths::for_root(&source);
+        crate::config::ensure_state_dirs(&paths).unwrap();
+
+        let engine = authorized_engine();
+        let policy = policy_with_limits();
+        let metrics = DiffMetrics {
+            runtime_dependencies_added: 1,
+            lines_added: 50,
+            files_added: 2,
+            ..Default::default()
+        };
+        let scorer = SimplicityScorer::new(policy.weights.clone(), policy.limits.clone());
+        let score = scorer.score(&metrics, &CorrectnessFloor::all_pass());
+
+        let mut req = BackendGenerateRequest::standard(
+            "fa1",
+            policy,
+            source.clone(),
+            paths.state_dir.clone(),
+            metrics,
+            score,
+            CorrectnessFloor::all_pass(),
+        );
+        req.mode = ReviewerInvocationMode::Intensified;
+        req.failure_summary = Some("exceeded limits".into());
+        req.task_text = Some("shrink".into());
+
+        let result = engine.generate_with_backend(req).unwrap();
+        assert!(result.outcome.original_preserved);
+        assert!(!result.outcome.applied);
+        assert!(result.outcome.message.contains("intensified"));
+        assert_eq!(
+            fs::read_to_string(source.join("KEEP.txt")).unwrap(),
+            "original"
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "provider-mock")]
+    fn clean_room_generate_rejects_prior_code_and_preserves_source() {
+        use crate::config::RepoPaths;
+
+        let dir = tempdir().unwrap();
+        let source = dir.path().join("src_repo");
+        fs::create_dir_all(source.join("src")).unwrap();
+        fs::write(source.join("src/lib.rs"), b"pub fn f() {}\n").unwrap();
+        let paths = RepoPaths::for_root(&source);
+        crate::config::ensure_state_dirs(&paths).unwrap();
+
+        let engine = FirebreakEngine::new(ReviewerSelector::new(vec![
+            ReviewerConfig::mock("r1", 10),
+            ReviewerConfig::mock("r2", 5),
+        ]));
+        let policy = policy_with_limits();
+        let metrics = DiffMetrics {
+            runtime_dependencies_added: 1,
+            lines_added: 40,
+            ..Default::default()
+        };
+        let scorer = SimplicityScorer::new(policy.weights.clone(), policy.limits.clone());
+        let score = scorer.score(&metrics, &CorrectnessFloor::all_pass());
+
+        let mut bad = BackendGenerateRequest::standard(
+            "fa-cr-bad",
+            policy.clone(),
+            source.clone(),
+            paths.state_dir.clone(),
+            metrics.clone(),
+            score.clone(),
+            CorrectnessFloor::all_pass(),
+        );
+        bad.mode = ReviewerInvocationMode::CleanRoom;
+        bad.preferred_reviewer_id = Some("r2".into());
+        bad.prior_implementation_code = Some("fn prior_patch() {}".into());
+        bad.failure_summary = Some("stage1 ooc".into());
+        assert!(engine.generate_with_backend(bad).is_err());
+
+        let mut good = BackendGenerateRequest::standard(
+            "fa-cr-ok",
+            policy,
+            source.clone(),
+            paths.state_dir.clone(),
+            metrics,
+            score,
+            CorrectnessFloor::all_pass(),
+        );
+        good.mode = ReviewerInvocationMode::CleanRoom;
+        good.preferred_reviewer_id = Some("r2".into());
+        good.failure_summary = Some("stage1 still ooc; hard limits".into());
+        good.task_text = Some("minimal fix".into());
+        let result = engine.generate_with_backend(good).unwrap();
+        assert!(result.outcome.original_preserved);
+        assert!(result.outcome.message.contains("clean-room"));
+        assert_eq!(result.outcome.reviewer_id.as_deref(), Some("r2"));
     }
 }

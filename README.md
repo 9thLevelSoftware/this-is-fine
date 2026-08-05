@@ -182,6 +182,7 @@ tif fire-level [1-4]
 tif rollback <run_id>
 tif audit show| --gc | --purge
 tif five-alarm --plan
+tif five-alarm --run <run_id> [--apply]
 tif adaptation
 tif tui
 ```

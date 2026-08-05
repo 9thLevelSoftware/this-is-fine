@@ -9,6 +9,15 @@ Versioning: see [docs/VERSIONING.md](docs/VERSIONING.md).
 
 ### Added
 
+- **Phase 3 Five-Alarm staged recovery** (design §8.2)
+  - Escalation gate: current containment failure required; historical risk alone refused
+  - Stage 1: intensified Firebreak (higher attempt budget, stricter reviewer wording)
+  - Stage 2: preserve Stage 1 candidate; select a different authorized model
+  - Stage 3: clean-room context (task, criteria, policy, verification plan, failure summary — **no previous implementation code**)
+  - Stage 4: verify all candidates; apply smallest verified; retain rejects for rollback
+  - Audit timeline of stages on `RunRecord.five_alarm`
+  - CLI: `tif five-alarm --plan` / `tif five-alarm --run <id> [--apply] [--historical-risk]`
+  - Orchestrator: `RunOrchestrator::run_five_alarm`
 - **Phase 2 automatic isolated Firebreak closed loop**
   - `RunOrchestrator::run_firebreak_auto`: authorized backend → re-verify → absolute/git ranking → apply or approval queue
   - Auto-apply when `approval.auto_apply_firebreak` (default `true`) and path is non-sensitive
