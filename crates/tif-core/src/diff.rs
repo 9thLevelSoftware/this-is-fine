@@ -90,8 +90,250 @@ pub fn metrics_from_git(repo_root: &Path) -> Result<DiffMetrics> {
     metrics.lines_removed = metrics.lines_removed.saturating_add(del);
 
     metrics.runtime_dependencies_added = estimate_runtime_deps_added(repo_root, &paths);
+    // Prefer structured dependency deltas when manifests are readable.
+    if let Ok(delta) = dependency_delta_from_git(repo_root, &paths) {
+        if delta.added_count() > 0 {
+            metrics.runtime_dependencies_added = delta.added_count();
+        }
+    }
+    apply_generated_code_heuristics(&mut metrics, Some(repo_root));
     metrics.changed_paths = paths;
     Ok(metrics)
+}
+
+/// Named dependency delta from Cargo.toml / package.json comparisons.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DependencyDelta {
+    pub added: Vec<String>,
+    pub removed: Vec<String>,
+}
+
+impl DependencyDelta {
+    pub fn added_count(&self) -> u32 {
+        self.added.len() as u32
+    }
+
+    pub fn removed_count(&self) -> u32 {
+        self.removed.len() as u32
+    }
+
+    pub fn merge(&mut self, other: DependencyDelta) {
+        for a in other.added {
+            if !self.added.contains(&a) {
+                self.added.push(a);
+            }
+        }
+        for r in other.removed {
+            if !self.removed.contains(&r) {
+                self.removed.push(r);
+            }
+        }
+    }
+}
+
+/// Compare dependency manifests between two directory trees (original vs candidate).
+pub fn dependency_delta_between_trees(
+    original_root: &Path,
+    candidate_root: &Path,
+) -> DependencyDelta {
+    let mut delta = DependencyDelta::default();
+    for name in ["Cargo.toml", "package.json", "go.mod"] {
+        let o = original_root.join(name);
+        let c = candidate_root.join(name);
+        if !o.exists() && !c.exists() {
+            continue;
+        }
+        let old_text = fs::read_to_string(&o).unwrap_or_default();
+        let new_text = fs::read_to_string(&c).unwrap_or_default();
+        if old_text == new_text {
+            continue;
+        }
+        delta.merge(dependency_delta_from_texts(name, &old_text, &new_text));
+    }
+    delta
+}
+
+/// Parse dependency names from Cargo.toml / package.json / go.mod text and diff them.
+pub fn dependency_delta_from_texts(filename: &str, old: &str, new: &str) -> DependencyDelta {
+    let old_deps = parse_manifest_deps(filename, old);
+    let new_deps = parse_manifest_deps(filename, new);
+    let mut added = Vec::new();
+    let mut removed = Vec::new();
+    for d in &new_deps {
+        if !old_deps.contains(d) {
+            added.push(d.clone());
+        }
+    }
+    for d in &old_deps {
+        if !new_deps.contains(d) {
+            removed.push(d.clone());
+        }
+    }
+    DependencyDelta { added, removed }
+}
+
+fn dependency_delta_from_git(repo_root: &Path, paths: &[String]) -> Result<DependencyDelta> {
+    Ok(dependency_delta_vs_git_head(repo_root, paths))
+}
+
+/// Compare current working-tree manifests to `HEAD` for named paths (best-effort).
+pub fn dependency_delta_vs_git_head(repo_root: &Path, paths: &[String]) -> DependencyDelta {
+    let mut delta = DependencyDelta::default();
+    for p in paths {
+        let base = p.rsplit('/').next().unwrap_or(p);
+        if !matches!(base, "Cargo.toml" | "package.json" | "go.mod") {
+            continue;
+        }
+        let new_text = fs::read_to_string(repo_root.join(p)).unwrap_or_default();
+        let old_text = git_output(repo_root, &["show", &format!("HEAD:{p}")]).unwrap_or_default();
+        delta.merge(dependency_delta_from_texts(base, &old_text, &new_text));
+    }
+    delta
+}
+
+fn parse_manifest_deps(filename: &str, text: &str) -> Vec<String> {
+    match filename {
+        "Cargo.toml" => parse_cargo_deps(text),
+        "package.json" => parse_package_json_deps(text),
+        "go.mod" => parse_go_mod_deps(text),
+        _ => Vec::new(),
+    }
+}
+
+fn parse_cargo_deps(text: &str) -> Vec<String> {
+    let mut deps = Vec::new();
+    let mut in_deps = false;
+    for line in text.lines() {
+        let t = line.trim();
+        if t.starts_with('[') {
+            // Runtime deps only: skip [dev-dependencies] / [build-dependencies].
+            let is_dev_or_build =
+                t.contains("dev-dependencies") || t.contains("build-dependencies");
+            in_deps = !is_dev_or_build
+                && (t == "[dependencies]"
+                    || t.starts_with("[dependencies.")
+                    || t == "[workspace.dependencies]"
+                    || t.contains(".dependencies]"));
+            continue;
+        }
+        if !in_deps || t.is_empty() || t.starts_with('#') {
+            continue;
+        }
+        if let Some((key, _)) = t.split_once('=') {
+            let name = key.trim().trim_matches('"');
+            if !name.is_empty() && !deps.iter().any(|d| d == name) {
+                deps.push(name.to_string());
+            }
+        }
+    }
+    deps
+}
+
+fn parse_package_json_deps(text: &str) -> Vec<String> {
+    let mut deps = Vec::new();
+    if let Ok(v) = serde_json::from_str::<serde_json::Value>(text) {
+        for key in ["dependencies", "optionalDependencies"] {
+            if let Some(obj) = v.get(key).and_then(|x| x.as_object()) {
+                for name in obj.keys() {
+                    if !deps.contains(name) {
+                        deps.push(name.clone());
+                    }
+                }
+            }
+        }
+        // Intentionally skip devDependencies for runtime dependency counting.
+    }
+    deps
+}
+
+fn parse_go_mod_deps(text: &str) -> Vec<String> {
+    let mut deps = Vec::new();
+    let mut in_require = false;
+    for line in text.lines() {
+        let t = line.trim();
+        if t.starts_with("require (") {
+            in_require = true;
+            continue;
+        }
+        if in_require {
+            if t == ")" {
+                in_require = false;
+                continue;
+            }
+            if t.is_empty() || t.starts_with("//") {
+                continue;
+            }
+            let name = t.split_whitespace().next().unwrap_or("");
+            if !name.is_empty() && !deps.iter().any(|d| d == name) {
+                deps.push(name.to_string());
+            }
+            continue;
+        }
+        if let Some(rest) = t.strip_prefix("require ") {
+            let name = rest.split_whitespace().next().unwrap_or("");
+            if !name.is_empty() && !deps.iter().any(|d| d == name) {
+                deps.push(name.to_string());
+            }
+        }
+    }
+    deps
+}
+
+/// Apply generated-code path heuristics to metrics (line counts for matching paths).
+pub fn apply_generated_code_heuristics(metrics: &mut DiffMetrics, repo_root: Option<&Path>) {
+    let mut gen_lines = 0u32;
+    for path in &metrics.changed_paths {
+        if !path_looks_generated(path) {
+            continue;
+        }
+        if let Some(root) = repo_root {
+            let full = root.join(path);
+            if let Ok(text) = fs::read_to_string(&full) {
+                gen_lines = gen_lines.saturating_add(text.lines().count() as u32);
+                continue;
+            }
+        }
+        // Without readable file content, count at least one unit so the path costs something.
+        gen_lines = gen_lines.saturating_add(1);
+    }
+    if gen_lines > 0 {
+        metrics.generated_code_lines = metrics.generated_code_lines.max(gen_lines);
+    }
+}
+
+/// Whether a path looks like generated / vendored machine output.
+pub fn path_looks_generated(path: &str) -> bool {
+    let p = path.replace('\\', "/").to_ascii_lowercase();
+    let base = p.rsplit('/').next().unwrap_or(&p);
+    p.contains("/generated/")
+        || p.contains("/gen/")
+        || p.contains("/.generated/")
+        || p.contains("/__generated__/")
+        || p.contains("/node_modules/")
+        || p.contains("/vendor/")
+        || p.contains("/target/")
+        || base.ends_with(".pb.go")
+        || base.ends_with(".pb.rs")
+        || base.ends_with("_pb2.py")
+        || base.ends_with(".min.js")
+        || base.ends_with(".min.css")
+        || base.ends_with(".map")
+        || base.ends_with(".snap")
+        || base.ends_with(".lock")
+        || base == "cargo.lock"
+        || base == "package-lock.json"
+        || base == "pnpm-lock.yaml"
+        || base == "yarn.lock"
+        || base.ends_with("_generated.rs")
+        || base.ends_with("_generated.go")
+        || base.ends_with(".g.dart")
+        || p.contains("/openapi/generated")
+        || (base.starts_with("generated_") && (base.ends_with(".rs") || base.ends_with(".go")))
+}
+
+/// Public alias used by assessment / policy helpers.
+pub fn path_looks_like_test(path: &str) -> bool {
+    is_test_path(path)
 }
 
 fn status_looks_empty_ok(raw: &str) -> bool {
@@ -230,6 +472,7 @@ pub fn metrics_from_tree_absolute(root: &Path) -> Result<DiffMetrics> {
     metrics.tests_changed = test_hits;
     metrics.configuration_surface_added = config_hits;
     metrics.changed_paths = paths;
+    apply_generated_code_heuristics(&mut metrics, Some(root));
     Ok(metrics)
 }
 
@@ -298,6 +541,12 @@ pub fn metrics_from_tree_diff(original_root: &Path, candidate_root: &Path) -> Re
     }
 
     metrics.changed_paths = paths;
+    // Structured dep delta when manifests differ.
+    let dep = dependency_delta_between_trees(original_root, candidate_root);
+    if dep.added_count() > 0 {
+        metrics.runtime_dependencies_added = dep.added_count();
+    }
+    apply_generated_code_heuristics(&mut metrics, Some(candidate_root));
     Ok(metrics)
 }
 
@@ -517,6 +766,10 @@ fn classify_file(
     }
     if looks_like_dependency_manifest(&norm) {
         metrics.configuration_surface_added = metrics.configuration_surface_added.saturating_add(1);
+    }
+    if path_looks_generated(&norm) {
+        // Unified-diff path: at least one generated unit; line counts already in metrics.
+        metrics.generated_code_lines = metrics.generated_code_lines.saturating_add(1);
     }
 }
 
@@ -786,6 +1039,49 @@ Binary files a/img.png and b/img.png differ
             err.to_string().contains("size limit") || err.to_string().contains("64 MiB"),
             "{err}"
         );
+    }
+
+    #[test]
+    fn cargo_dependency_delta_detects_added() {
+        let old = r#"
+[package]
+name = "x"
+version = "0.1.0"
+
+[dependencies]
+serde = "1"
+"#;
+        let new = r#"
+[package]
+name = "x"
+version = "0.1.0"
+
+[dependencies]
+serde = "1"
+tokio = "1"
+"#;
+        let d = dependency_delta_from_texts("Cargo.toml", old, new);
+        assert!(d.added.iter().any(|a| a == "tokio"));
+        assert!(!d.added.iter().any(|a| a == "serde"));
+        assert!(d.removed.is_empty());
+    }
+
+    #[test]
+    fn package_json_dependency_delta_skips_dev() {
+        let old = r#"{"dependencies":{"a":"1"},"devDependencies":{"jest":"29"}}"#;
+        let new =
+            r#"{"dependencies":{"a":"1","b":"2"},"devDependencies":{"jest":"29","eslint":"8"}}"#;
+        let d = dependency_delta_from_texts("package.json", old, new);
+        assert_eq!(d.added, vec!["b".to_string()]);
+        assert!(!d.added.iter().any(|x| x == "eslint"));
+    }
+
+    #[test]
+    fn generated_path_heuristics() {
+        assert!(path_looks_generated("src/generated/api.rs"));
+        assert!(path_looks_generated("api/v1/types.pb.go"));
+        assert!(path_looks_generated("dist/app.min.js"));
+        assert!(!path_looks_generated("src/main.rs"));
     }
 
     #[test]

@@ -45,6 +45,13 @@ impl AuditStore {
     pub fn open(paths: &RepoPaths, audit: &AuditConfig) -> Result<Self> {
         crate::config::ensure_state_dirs(paths)?;
         let conn = Connection::open(paths.db_path())?;
+        // Concurrency / crash resilience: WAL + busy timeout (Phase 5).
+        conn.busy_timeout(std::time::Duration::from_secs(5))?;
+        conn.execute_batch(
+            "PRAGMA journal_mode=WAL;
+             PRAGMA synchronous=NORMAL;
+             PRAGMA foreign_keys=ON;",
+        )?;
         let store = Self {
             conn,
             artifacts_dir: paths.artifacts_dir(),
@@ -226,7 +233,29 @@ impl AuditStore {
     }
 
     /// Store content-addressed artifact; returns hash.
+    ///
+    /// Binary payloads are skipped (not persisted) to avoid leaking opaque blobs
+    /// and bloating the audit store. Callers receive an empty hash for skipped items.
     pub fn store_artifact(&self, kind: &str, bytes: &[u8], run_id: Option<&str>) -> Result<String> {
+        if self.tier == AuditTier::Metadata {
+            return Ok(String::new());
+        }
+        if looks_like_binary_artifact(bytes) {
+            // Record a stub row so operators know something was skipped.
+            let hash = format!("skipped-binary-{}", &hex_sha256(bytes)[..16]);
+            self.conn.execute(
+                "INSERT OR IGNORE INTO artifacts (hash, kind, size_bytes, created_at, run_id) VALUES (?1,?2,?3,?4,?5)",
+                params![
+                    hash,
+                    format!("{kind}:binary-skipped"),
+                    bytes.len() as i64,
+                    Utc::now().to_rfc3339(),
+                    run_id
+                ],
+            )?;
+            return Ok(String::new());
+        }
+
         let filtered = match self.tier {
             AuditTier::Metadata => return Ok(String::new()),
             AuditTier::Redacted => redact_secrets(&String::from_utf8_lossy(bytes)).into_bytes(),
@@ -260,8 +289,21 @@ impl AuditStore {
         self.artifacts_dir.join(prefix).join(hash)
     }
 
-    /// Evict old records and unreferenced artifacts.
+    /// Evict old records and unreferenced artifacts (age + size).
     pub fn gc(&self) -> Result<GcReport> {
+        self.gc_with_options(None, None, None)
+    }
+
+    /// GC audit store and optionally isolation snapshots / worktrees.
+    ///
+    /// When `isolation` is provided, also runs isolation GC with rollback retention
+    /// while protecting live sessions (Phase 5).
+    pub fn gc_with_options(
+        &self,
+        isolation: Option<IsolationGcOpts<'_>>,
+        rollback: Option<crate::isolation::RollbackRetention>,
+        repo_root: Option<&std::path::Path>,
+    ) -> Result<GcReport> {
         let cutoff = Utc::now() - Duration::days(self.max_age_days as i64);
         let deleted_runs = self.conn.execute(
             "DELETE FROM runs WHERE created_at < ?1",
@@ -289,9 +331,12 @@ impl AuditStore {
                 if current <= max_bytes {
                     break;
                 }
-                let path = self.artifact_path(&hash);
-                if path.exists() {
-                    let _ = fs::remove_file(path);
+                // Never delete on-disk content for skipped-binary stubs (no file).
+                if !hash.starts_with("skipped-binary-") {
+                    let path = self.artifact_path(&hash);
+                    if path.exists() {
+                        let _ = fs::remove_file(path);
+                    }
                 }
                 self.conn
                     .execute("DELETE FROM artifacts WHERE hash=?1", params![hash])?;
@@ -300,10 +345,32 @@ impl AuditStore {
             }
         }
 
+        let mut isolation_removed = 0u32;
+        if let Some(opts) = isolation {
+            let now = Utc::now().timestamp();
+            isolation_removed = if let Some(ret) = rollback {
+                crate::isolation::gc_with_rollback_retention(
+                    opts.snapshots_dir,
+                    opts.worktrees_dir,
+                    ret,
+                    now,
+                    repo_root,
+                )?
+            } else {
+                crate::isolation::gc_expired_isolation(
+                    opts.snapshots_dir,
+                    opts.worktrees_dir,
+                    opts.max_age_days,
+                    now,
+                )?
+            };
+        }
+
         Ok(GcReport {
             deleted_runs,
             deleted_events,
             reclaimed_bytes: reclaimed,
+            isolation_removed,
         })
     }
 
@@ -388,6 +455,11 @@ impl AuditStore {
             (Some(_), Some(v)) => Some(v),
             _ => None,
         };
+        let floor_failed = run.score.as_ref().map(|s| s.disqualified).unwrap_or(false)
+            || run
+                .assessment
+                .as_ref()
+                .is_some_and(|a| matches!(a.status, crate::assess::AssessmentStatus::Rejected));
         let outcome = crate::adaptation::RunOutcome {
             contained,
             out_of_control,
@@ -411,6 +483,7 @@ impl AuditStore {
                 .map(|p| p.pressure.template_id.as_str())
                 .unwrap_or("unknown"),
             reviewer_id: fb.and_then(|f| f.reviewer_id.as_deref()),
+            floor_failed,
         };
         eng.record_run(outcome);
         self.save_adaptation_stats(eng.stats())
@@ -429,11 +502,21 @@ pub struct RunSummary {
     pub contained: bool,
 }
 
+/// Options for isolation GC invoked from audit GC.
+#[derive(Debug, Clone, Copy)]
+pub struct IsolationGcOpts<'a> {
+    pub snapshots_dir: &'a std::path::Path,
+    pub worktrees_dir: Option<&'a std::path::Path>,
+    pub max_age_days: u32,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GcReport {
     pub deleted_runs: usize,
     pub deleted_events: usize,
     pub reclaimed_bytes: u64,
+    #[serde(default)]
+    pub isolation_removed: u32,
 }
 
 fn hex_sha256(bytes: &[u8]) -> String {
@@ -461,12 +544,131 @@ fn redact_or_digest(text: &str, tier: AuditTier) -> String {
 pub fn redact_secrets(input: &str) -> String {
     // Multi-line PEM private keys first.
     let mut out = redact_pem_blocks(input);
+    out = redact_jwt_like(&out);
+    out = redact_connection_strings(&out);
 
     let mut redacted_lines = Vec::new();
     for line in out.lines() {
         redacted_lines.push(redact_secret_line(line));
     }
     out = redacted_lines.join("\n");
+    if input.ends_with('\n') && !out.ends_with('\n') {
+        out.push('\n');
+    }
+    out
+}
+
+/// Heuristic: treat as binary when NUL bytes present or high non-text ratio.
+pub fn looks_like_binary_artifact(bytes: &[u8]) -> bool {
+    if bytes.is_empty() {
+        return false;
+    }
+    if bytes.contains(&0) {
+        return true;
+    }
+    // Sample up to 8 KiB for control-character density.
+    let sample = &bytes[..bytes.len().min(8192)];
+    let non_text = sample
+        .iter()
+        .filter(|&&b| b < 0x09 || (b > 0x0d && b < 0x20) || b == 0x7f)
+        .count();
+    non_text * 10 > sample.len() // >10% control chars
+}
+
+/// Redact JWT-shaped tokens (three base64url segments).
+fn redact_jwt_like(input: &str) -> String {
+    let mut result = String::new();
+    for line in input.lines() {
+        let mut rebuilt = String::new();
+        for part in line.split_whitespace() {
+            if !rebuilt.is_empty() {
+                rebuilt.push(' ');
+            }
+            if looks_like_jwt(part.trim_matches(|c: char| {
+                c == '"' || c == '\'' || c == ',' || c == ';' || c == ')' || c == '('
+            })) {
+                rebuilt.push_str("[REDACTED JWT]");
+            } else {
+                rebuilt.push_str(part);
+            }
+        }
+        // Also catch key=jwt forms without whitespace.
+        let rebuilt = redact_embedded_jwt(&rebuilt);
+        if !result.is_empty() {
+            result.push('\n');
+        }
+        result.push_str(&rebuilt);
+    }
+    if input.ends_with('\n') && !result.ends_with('\n') {
+        result.push('\n');
+    }
+    result
+}
+
+fn looks_like_jwt(s: &str) -> bool {
+    let s = s.trim_matches(|c: char| c == '"' || c == '\'' || c == ',' || c == ';');
+    let parts: Vec<&str> = s.split('.').collect();
+    if parts.len() != 3 {
+        return false;
+    }
+    parts.iter().all(|p| {
+        p.len() >= 8
+            && p.chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    }) && s.starts_with("eyJ")
+}
+
+fn redact_embedded_jwt(line: &str) -> String {
+    // key=eyJ... form
+    if let Some(idx) = line.find("eyJ") {
+        let rest = &line[idx..];
+        let end = rest
+            .find(|c: char| c.is_whitespace() || c == '"' || c == '\'')
+            .unwrap_or(rest.len());
+        let candidate = &rest[..end];
+        if looks_like_jwt(candidate) {
+            return format!("{}[REDACTED JWT]{}", &line[..idx], &rest[end..]);
+        }
+    }
+    line.to_string()
+}
+
+fn redact_connection_strings(input: &str) -> String {
+    let mut out = String::new();
+    for line in input.lines() {
+        let lower = line.to_ascii_lowercase();
+        let redacted = if lower.contains("postgres://")
+            || lower.contains("postgresql://")
+            || lower.contains("mysql://")
+            || lower.contains("mongodb://")
+            || lower.contains("mongodb+srv://")
+            || lower.contains("redis://")
+            || lower.contains("amqp://")
+        {
+            // Keep scheme, redact credentials if present.
+            if let Some(scheme_end) = line.find("://") {
+                let after = &line[scheme_end + 3..];
+                if after.contains('@') {
+                    let scheme = &line[..scheme_end + 3];
+                    if let Some(at) = after.find('@') {
+                        format!("{scheme}***@{}", &after[at + 1..])
+                    } else {
+                        line.to_string()
+                    }
+                } else {
+                    line.to_string()
+                }
+            } else {
+                line.to_string()
+            }
+        } else {
+            line.to_string()
+        };
+        if !out.is_empty() {
+            out.push('\n');
+        }
+        out.push_str(&redacted);
+    }
     if input.ends_with('\n') && !out.ends_with('\n') {
         out.push('\n');
     }
@@ -522,7 +724,15 @@ fn redact_secret_line(line: &str) -> String {
         || looks_like_token_secret(&lower)
         || lower.contains("bearer ")
         || lower.contains("authorization")
-        || lower.contains("private key");
+        || lower.contains("private key")
+        || lower.contains("client_secret")
+        || lower.contains("aws_secret")
+        || lower.contains("x-api-key")
+        || lower.contains("set-cookie")
+        || lower.contains("cookie:")
+        || lower.starts_with("cookie ")
+        || lower.contains("ssh-rsa ")
+        || lower.contains("ssh-ed25519 ");
     if !sensitive {
         return line.to_string();
     }
@@ -675,6 +885,64 @@ mod tests {
         let s = redact_secrets(pem);
         assert!(s.contains("[REDACTED PRIVATE KEY]"));
         assert!(!s.contains("MIIEowIBAAKCAQEA"));
+    }
+
+    #[test]
+    fn skips_binary_artifacts() {
+        let dir = tempdir().unwrap();
+        let paths = RepoPaths::for_root(dir.path());
+        crate::config::ensure_state_dirs(&paths).unwrap();
+        let store = AuditStore::open(
+            &paths,
+            &AuditConfig {
+                tier: "full".into(),
+                max_age_days: 90,
+                max_size_mb: 100,
+            },
+        )
+        .unwrap();
+        let bin = vec![0u8, 1, 2, 3, 4, 0, 0xff];
+        let hash = store.store_artifact("blob", &bin, None).unwrap();
+        assert!(hash.is_empty());
+    }
+
+    #[test]
+    fn redacts_jwt_and_connection_string() {
+        let jwt = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.signaturepart";
+        let s = redact_secrets(&format!("Authorization: Bearer {jwt}"));
+        assert!(s.contains("Bearer ***") || s.contains("[REDACTED JWT]"));
+        assert!(!s.contains("eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9"));
+
+        let conn = redact_secrets("DATABASE_URL=postgres://user:hunter2@localhost/db");
+        assert!(conn.contains("***@") || conn.contains("password=***") || conn.contains("=***"));
+        assert!(!conn.contains("hunter2"));
+    }
+
+    #[test]
+    fn gc_age_deletes_old_runs() {
+        let dir = tempdir().unwrap();
+        let paths = RepoPaths::for_root(dir.path());
+        crate::config::ensure_state_dirs(&paths).unwrap();
+        let store = AuditStore::open(
+            &paths,
+            &AuditConfig {
+                tier: "redacted".into(),
+                max_age_days: 1,
+                max_size_mb: 100,
+            },
+        )
+        .unwrap();
+        // Insert an old run via SQL through a second connection (conn is private).
+        let conn = rusqlite::Connection::open(paths.db_path()).unwrap();
+        conn.execute(
+            "INSERT INTO runs (id, state, created_at, updated_at, repo_root, contained, summary)
+             VALUES ('old', 'closed', '2000-01-01T00:00:00+00:00', '2000-01-01T00:00:00+00:00', '/', 0, '')",
+            [],
+        )
+        .unwrap();
+        drop(conn);
+        let report = store.gc().unwrap();
+        assert!(report.deleted_runs >= 1);
     }
 
     #[test]

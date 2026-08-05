@@ -12,9 +12,9 @@ Canonical design: [`docs/superpowers/specs/2026-08-04-this-is-fine-design.md`](s
 | **1** | Reviewer execution plane (authorized backends, egress, credentials) | **Done** (in tree) |
 | **2** | Automatic isolated Firebreak closed loop + approval queue | **Done** (in tree) |
 | **3** | Five-Alarm staged recovery | **Done** (in tree) |
-| **4** | Inspector / metrics / Damage Assessment depth | Planned |
-| **5** | Audit, privacy, retention, concurrency, path hardening | Planned |
-| **6** | Adaptation & pressure evaluation | Planned |
+| **4** | Inspector / metrics / Damage Assessment depth | **Done** (in tree) |
+| **5** | Audit, privacy, retention, concurrency, path hardening | **Done** (in tree) |
+| **6** | Adaptation & pressure evaluation | **Done** (in tree) |
 | **7** | First-class agent adapters (E2E + Windows installers) | Planned |
 | **8** | Production TUI (write actions, live run) | Planned |
 | **9** | CI write paths, signed distribution, packaging | Planned |

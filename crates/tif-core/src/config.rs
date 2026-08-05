@@ -74,6 +74,10 @@ pub struct SimplicityConfig {
     pub weights: SimplicityWeights,
     #[serde(default)]
     pub limits: SimplicityLimits,
+    /// Justified exceptions (paths/globs or free-text rationales) recorded on
+    /// Damage Assessments as audit notes. Do **not** bypass the correctness floor.
+    #[serde(default)]
+    pub exceptions: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -355,6 +359,8 @@ pub struct ConfigFile {
 pub struct SimplicityPartial {
     pub weights: Option<SimplicityWeightsPartial>,
     pub limits: Option<SimplicityLimits>,
+    #[serde(default)]
+    pub exceptions: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -577,6 +583,9 @@ fn merge_simplicity(base: &mut SimplicityConfig, partial: &SimplicityPartial) {
     }
     if let Some(ref l) = partial.limits {
         merge_limits_fieldwise(&mut base.limits, l);
+    }
+    if let Some(ref ex) = partial.exceptions {
+        base.exceptions = ex.clone();
     }
 }
 
@@ -844,6 +853,7 @@ mod tests {
                     new_runtime_dependencies: Some(0),
                     ..Default::default()
                 }),
+                ..Default::default()
             }),
             ..Default::default()
         };

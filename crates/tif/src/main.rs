@@ -5,7 +5,7 @@ mod tui_app;
 
 use anyhow::Context;
 use clap::Parser;
-use cli::{Cli, Commands, PolicyCmd, ReviewerCmd, RunCmd};
+use cli::{AdaptationCmd, Cli, Commands, PolicyCmd, ReviewerCmd, RunCmd};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use tif_core::assess::{AssessmentStatus, DamageAssessor};
@@ -223,7 +223,13 @@ fn run() -> anyhow::Result<ExitCode> {
                 Ok(ExitCode::from(2))
             }
         },
-        Commands::Adaptation { show } => cmd_adaptation(&root, show, json),
+        Commands::Adaptation(sub) => match sub {
+            AdaptationCmd::Status => cmd_adaptation_status(&root, json),
+            AdaptationCmd::Recommend { category, apply } => {
+                cmd_adaptation_recommend(&root, category.as_deref(), apply, json)
+            }
+            AdaptationCmd::Reset => cmd_adaptation_reset(&root, json),
+        },
         Commands::Reviewer(sub) => match sub {
             ReviewerCmd::List => cmd_reviewer_list(&root, json),
             ReviewerCmd::Probe { id } => cmd_reviewer_probe(&root, id, json),
@@ -1259,12 +1265,25 @@ fn cmd_audit_show(root: &Path, limit: usize, _show: bool, json: bool) -> anyhow:
 
 fn cmd_audit_gc(root: &Path, json: bool) -> anyhow::Result<ExitCode> {
     let cfg = load_config(root)?;
-    let store = AuditStore::open(&RepoPaths::for_root(root), &cfg.audit)?;
-    let report = store.gc()?;
+    let paths = RepoPaths::for_root(root);
+    ensure_state_dirs(&paths)?;
+    let store = AuditStore::open(&paths, &cfg.audit)?;
+    let snapshots = paths.snapshots_dir();
+    let worktrees = paths.state_dir.join("worktrees");
+    let isolation = tif_core::IsolationGcOpts {
+        snapshots_dir: &snapshots,
+        worktrees_dir: worktrees.exists().then_some(worktrees.as_path()),
+        max_age_days: cfg.rollback.max_days,
+    };
+    let retention = tif_core::RollbackRetention::from_config(
+        cfg.rollback.max_days,
+        cfg.rollback.successful_commits,
+    );
+    let report = store.gc_with_options(Some(isolation), Some(retention), Some(root))?;
     Ok(emit_ok(report, json, |r| {
         println!(
-            "gc: deleted_runs={} deleted_events={} reclaimed_bytes={}",
-            r.deleted_runs, r.deleted_events, r.reclaimed_bytes
+            "gc: deleted_runs={} deleted_events={} reclaimed_bytes={} isolation_removed={}",
+            r.deleted_runs, r.deleted_events, r.reclaimed_bytes, r.isolation_removed
         );
     }))
 }
@@ -1606,17 +1625,15 @@ fn cmd_reviewer_test(
     Ok(code)
 }
 
-fn cmd_adaptation(root: &Path, _show: bool, json: bool) -> anyhow::Result<ExitCode> {
+fn cmd_adaptation_status(root: &Path, json: bool) -> anyhow::Result<ExitCode> {
     let cfg = load_config(root)?;
     let paths = RepoPaths::for_root(root);
     let store = AuditStore::open(&paths, &cfg.audit)?;
     let stats = store.load_adaptation_stats()?;
     let eng = AdaptationEngine::load(stats);
-    let rec = eng.recommend(tif_core::TaskCategory::Unknown);
     Ok(emit_ok(
         serde_json::json!({
             "stats": eng.stats(),
-            "recommendation": rec,
         }),
         json,
         |_| {
@@ -1630,7 +1647,109 @@ fn cmd_adaptation(root: &Path, _show: bool, json: bool) -> anyhow::Result<ExitCo
                 eng.stats().firebreak_fail,
                 eng.stats().rollbacks
             );
-            println!("recommendations: {:?}", rec.notes);
+            println!(
+                "pressure variants: {}",
+                eng.stats().pressure_variant_scores.len()
+            );
+            for v in &eng.stats().pressure_variant_scores {
+                println!(
+                    "  {} trials={} score={:.1} verify={:.2} status={:?}",
+                    v.template_id,
+                    v.trials,
+                    v.avg_simplicity_score,
+                    v.verification_pass_rate,
+                    v.status
+                );
+            }
+            if !eng.stats().promoted_templates.is_empty() {
+                println!("promoted: {:?}", eng.stats().promoted_templates);
+            }
+            println!("applied knobs: {:?}", eng.stats().applied_knobs);
         },
     ))
+}
+
+fn cmd_adaptation_recommend(
+    root: &Path,
+    category: Option<&str>,
+    apply: bool,
+    json: bool,
+) -> anyhow::Result<ExitCode> {
+    let cfg = load_config(root)?;
+    let paths = RepoPaths::for_root(root);
+    let store = AuditStore::open(&paths, &cfg.audit)?;
+    let stats = store.load_adaptation_stats()?;
+    let mut eng = AdaptationEngine::load(stats);
+    let cat = category
+        .and_then(|s| s.parse::<tif_core::TaskCategory>().ok())
+        .unwrap_or(tif_core::TaskCategory::Unknown);
+    let rec = eng.recommend(cat);
+    let mut applied = Vec::new();
+    if apply {
+        if let Some(fl) = rec.suggested_fire_level {
+            // Allowlisted: fire level bias ≤4 only.
+            eng.self_apply(
+                tif_core::SelfApplyKnob::FireLevelBias,
+                tif_core::SelfApplyValue::FireLevel(fl.as_u8()),
+            )?;
+            applied.push(format!("fire_level_bias={}", fl.as_u8()));
+        }
+        if let Some(scale) = rec.limit_scale {
+            eng.self_apply(
+                tif_core::SelfApplyKnob::Thresholds,
+                tif_core::SelfApplyValue::LimitScale(scale),
+            )?;
+            applied.push(format!("limit_scale={scale}"));
+        }
+        if let Some(ref tid) = rec.preferred_pressure_template {
+            eng.self_apply(
+                tif_core::SelfApplyKnob::PressureTemplate,
+                tif_core::SelfApplyValue::TemplateId(tid.clone()),
+            )?;
+            applied.push(format!("pressure_template={tid}"));
+        }
+        // Explicitly never apply floor / sensitive / verify knobs.
+        store.save_adaptation_stats(eng.stats())?;
+    }
+    Ok(emit_ok(
+        serde_json::json!({
+            "category": cat.as_str(),
+            "recommendation": rec,
+            "applied": applied,
+        }),
+        json,
+        |_| {
+            println!("Adaptation recommend for {}", cat.as_str());
+            if let Some(fl) = rec.suggested_fire_level {
+                println!("  fire_level: {}", fl.as_u8());
+            }
+            if let Some(s) = rec.limit_scale {
+                println!("  limit_scale: {s}");
+            }
+            if let Some(ref t) = rec.preferred_pressure_template {
+                println!("  pressure_template: {t}");
+            }
+            if let Some(ref r) = rec.preferred_reviewer_id {
+                println!("  reviewer: {r}");
+            }
+            for n in &rec.notes {
+                println!("  note: {n}");
+            }
+            if apply {
+                println!("self-applied (allowlisted): {applied:?}");
+            }
+        },
+    ))
+}
+
+fn cmd_adaptation_reset(root: &Path, json: bool) -> anyhow::Result<ExitCode> {
+    let cfg = load_config(root)?;
+    let paths = RepoPaths::for_root(root);
+    let store = AuditStore::open(&paths, &cfg.audit)?;
+    let mut eng = AdaptationEngine::load(store.load_adaptation_stats()?);
+    eng.reset();
+    store.save_adaptation_stats(eng.stats())?;
+    Ok(emit_ok(serde_json::json!({"reset": true}), json, |_| {
+        println!("Local adaptation stats reset.")
+    }))
 }

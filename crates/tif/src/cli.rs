@@ -116,7 +116,7 @@ pub enum Commands {
         show: bool,
         #[arg(long)]
         limit: Option<usize>,
-        /// Run garbage collection.
+        /// Run garbage collection (audit age+size and isolation retention).
         #[arg(long)]
         gc: bool,
         /// Purge all local audit data.
@@ -145,14 +145,30 @@ pub enum Commands {
     },
     /// Interactive TUI (keyboard-driven; every action has a CLI equivalent).
     Tui,
-    /// Local adaptation stats and recommendations.
-    Adaptation {
-        #[arg(long, default_value_t = true)]
-        show: bool,
-    },
+    /// Local adaptation stats, recommendations, and self-apply (allowlisted knobs only).
+    #[command(subcommand)]
+    Adaptation(AdaptationCmd),
     /// Authorized reviewer pool operations (local config only).
     #[command(subcommand)]
     Reviewer(ReviewerCmd),
+}
+
+/// Local adaptation: status, recommend, reset (no telemetry).
+#[derive(Debug, Subcommand)]
+pub enum AdaptationCmd {
+    /// Show local adaptation stats and applied knobs (default).
+    Status,
+    /// Show recommendations for a task category.
+    Recommend {
+        /// Task category string (e.g. bug_fix, feature_addition). Default: unknown.
+        #[arg(long)]
+        category: Option<String>,
+        /// Self-apply allowlisted knobs from the recommendation (fire level ≤4, thresholds, template).
+        #[arg(long)]
+        apply: bool,
+    },
+    /// Clear local adaptation stats and applied knobs.
+    Reset,
 }
 
 /// Reviewer pool: list, probe connectivity, offline test with mock.

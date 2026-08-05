@@ -706,11 +706,200 @@ pub fn open_isolation(
 }
 
 /// Apply a verified candidate with fail-safe restore on error.
+///
+/// Acquires a simple exclusive lockfile under `.this-is-fine/apply.lock` for the
+/// source workspace so concurrent apply attempts fail closed.
 pub fn apply_verified_candidate(
     isolator: &dyn Isolator,
     session: &mut IsolationSession,
 ) -> Result<()> {
+    let state_dir = session.source_root.join(crate::config::STATE_DIR_NAME);
+    let _lock = ApplyLock::acquire(&state_dir)?;
     isolator.apply_to_source(session)
+}
+
+/// Exclusive apply lock (simple lockfile under `.this-is-fine/`).
+///
+/// Not a cross-machine distributed lock — only prevents concurrent local applies.
+#[derive(Debug)]
+pub struct ApplyLock {
+    path: PathBuf,
+}
+
+impl ApplyLock {
+    /// Lock path for a repository state directory.
+    pub fn path_for(state_dir: &Path) -> PathBuf {
+        state_dir.join("apply.lock")
+    }
+
+    /// Acquire exclusive lock. Fails if another process holds the lockfile.
+    pub fn acquire(state_dir: &Path) -> Result<Self> {
+        fs::create_dir_all(state_dir)?;
+        let path = Self::path_for(state_dir);
+        // Atomic create-new: fails if the file already exists.
+        match fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+        {
+            Ok(mut f) => {
+                use std::io::Write;
+                let _ = writeln!(f, "pid={} at={}", std::process::id(), chrono_now_unix());
+                Ok(Self { path })
+            }
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
+                // Stale lock recovery: if lock is older than 2 hours, take over.
+                if let Ok(meta) = fs::metadata(&path) {
+                    if let Ok(modified) = meta.modified() {
+                        if let Ok(age) = modified.elapsed() {
+                            if age.as_secs() > 2 * 60 * 60 {
+                                let _ = fs::remove_file(&path);
+                                return Self::acquire(state_dir);
+                            }
+                        }
+                    }
+                }
+                Err(TifError::Isolation(format!(
+                    "apply lock held (another apply in progress): {}",
+                    path.display()
+                )))
+            }
+            Err(e) => Err(TifError::Io(e)),
+        }
+    }
+
+    /// Force-remove a lockfile (tests / operator recovery).
+    pub fn force_release(state_dir: &Path) -> Result<()> {
+        let path = Self::path_for(state_dir);
+        if path.exists() {
+            fs::remove_file(path)?;
+        }
+        Ok(())
+    }
+}
+
+impl Drop for ApplyLock {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.path);
+    }
+}
+
+fn chrono_now_unix() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
+/// Rollback retention policy: keep baselines until **either** max age **or**
+/// N successful commits after apply (whichever comes first).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RollbackRetention {
+    pub max_days: u32,
+    pub successful_commits: u32,
+}
+
+impl RollbackRetention {
+    pub fn from_config(max_days: u32, successful_commits: u32) -> Self {
+        Self {
+            max_days,
+            successful_commits,
+        }
+    }
+
+    /// Whether a baseline created at `created_at_unix` may be garbage-collected.
+    ///
+    /// When `commits_since_apply` is `Some(n)` and `n >= successful_commits`,
+    /// retention ends even if age is under `max_days`. Age alone also ends retention.
+    pub fn may_gc(
+        &self,
+        created_at_unix: i64,
+        now_unix: i64,
+        commits_since_apply: Option<u32>,
+    ) -> bool {
+        let max_age_secs = i64::from(self.max_days).saturating_mul(24 * 60 * 60);
+        let age_expired = now_unix.saturating_sub(created_at_unix) >= max_age_secs;
+        let commits_expired = commits_since_apply.is_some_and(|n| n >= self.successful_commits);
+        age_expired || commits_expired
+    }
+}
+
+/// Count commits on the current branch since `since_unix` (best-effort; 0 if not a git repo).
+pub fn count_commits_since(repo_root: &Path, since_unix: i64) -> u32 {
+    let since = format!("--since=@{since_unix}");
+    let output = Command::new("git")
+        .args(["rev-list", "--count", "HEAD", &since])
+        .current_dir(repo_root)
+        .output();
+    match output {
+        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout)
+            .trim()
+            .parse::<u32>()
+            .unwrap_or(0),
+        _ => 0,
+    }
+}
+
+/// GC isolation artifacts using rollback retention (age **or** successful commits).
+///
+/// Protects live sessions the same way as [`gc_expired_isolation`].
+pub fn gc_with_rollback_retention(
+    snapshots_dir: &Path,
+    worktrees_dir: Option<&Path>,
+    retention: RollbackRetention,
+    now_unix: i64,
+    repo_root: Option<&Path>,
+) -> Result<u32> {
+    // Primary path: age-based GC (existing safety for live sessions).
+    let mut removed =
+        gc_expired_isolation(snapshots_dir, worktrees_dir, retention.max_days, now_unix)?;
+    // Secondary: commit-count based early expiry for baselines when git is available.
+    if retention.successful_commits == 0 {
+        return Ok(removed);
+    }
+    if !snapshots_dir.exists() {
+        return Ok(removed);
+    }
+    let mut live_roots: Vec<PathBuf> = vec![snapshots_dir.to_path_buf()];
+    if let Some(wt) = worktrees_dir {
+        live_roots.push(wt.to_path_buf());
+    }
+    for entry in fs::read_dir(snapshots_dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if !name.ends_with("-baseline") {
+            continue;
+        }
+        let session_id = name.trim_end_matches("-baseline");
+        if session_still_live(session_id, &live_roots) {
+            continue;
+        }
+        let meta = match entry.metadata() {
+            Ok(m) => m,
+            Err(_) => continue,
+        };
+        let created = meta
+            .modified()
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        let commits = repo_root.map(|r| count_commits_since(r, created));
+        if retention.may_gc(created, now_unix, commits) {
+            // Only remove if commit threshold hit and age has not already been handled.
+            // Age-based path already ran; here we only act on commit threshold.
+            if commits.is_some_and(|n| n >= retention.successful_commits) {
+                if path.is_dir() {
+                    fs::remove_dir_all(&path)?;
+                } else {
+                    fs::remove_file(&path)?;
+                }
+                removed = removed.saturating_add(1);
+            }
+        }
+    }
+    Ok(removed)
 }
 
 /// Roll back a previously applied candidate.
@@ -1006,6 +1195,31 @@ mod tests {
         assert!(!session.applied);
         assert!(!session.restore_pending);
         assert_eq!(fs::read_to_string(source.join("a.txt")).unwrap(), "A\n");
+    }
+
+    #[test]
+    fn apply_lock_exclusive() {
+        let dir = tempdir().unwrap();
+        let state = dir.path().join(".this-is-fine");
+        let lock1 = ApplyLock::acquire(&state).unwrap();
+        let err = ApplyLock::acquire(&state).unwrap_err();
+        assert!(err.to_string().contains("apply lock") || err.to_string().contains("lock"));
+        drop(lock1);
+        let lock2 = ApplyLock::acquire(&state).unwrap();
+        drop(lock2);
+    }
+
+    #[test]
+    fn rollback_retention_age_or_commits() {
+        let r = RollbackRetention::from_config(7, 3);
+        let now = 1_000_000i64;
+        // Fresh, no commits → keep
+        assert!(!r.may_gc(now - 60, now, Some(0)));
+        // Fresh but 3 commits → gc
+        assert!(r.may_gc(now - 60, now, Some(3)));
+        // Old enough → gc regardless of commits
+        assert!(r.may_gc(now - 8 * 24 * 3600, now, Some(0)));
+        assert!(r.may_gc(now - 8 * 24 * 3600, now, None));
     }
 
     #[test]
