@@ -208,8 +208,15 @@ impl FirebreakEngine {
         let selected = if let Some(ref id) = req.preferred_reviewer_id {
             self.selector.select_by_id(id)?
         } else {
-            self.selector
-                .select_excluding(req.policy.task_category, &req.exclude_reviewer_ids)?
+            {
+                let exclude: Vec<&str> = req
+                    .exclude_reviewer_ids
+                    .iter()
+                    .map(String::as_str)
+                    .collect();
+                self.selector
+                    .select_excluding(req.policy.task_category, &exclude)?
+            }
         };
         let cfg = self.reviewer_config(&selected.id).cloned().ok_or_else(|| {
             TifError::UnauthorizedReviewer(format!(

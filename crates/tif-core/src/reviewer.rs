@@ -60,7 +60,7 @@ impl ReviewerSelector {
     pub fn select_excluding(
         &self,
         category: TaskCategory,
-        exclude_ids: &[String],
+        exclude_ids: &[&str],
     ) -> Result<SelectedReviewer> {
         if self.pool.is_empty() {
             return Err(TifError::UnauthorizedReviewer(
@@ -72,7 +72,7 @@ impl ReviewerSelector {
             .pool
             .iter()
             .filter(|r| {
-                !exclude_ids.iter().any(|ex| ex == &r.id)
+                !exclude_ids.iter().any(|ex| *ex == r.id)
                     && (r.eligible_task_types.is_empty()
                         || r.eligible_task_types
                             .iter()
@@ -195,15 +195,15 @@ mod tests {
         let first = s.select(TaskCategory::BugFix).unwrap();
         assert_eq!(first.id, "a");
         let second = s
-            .select_excluding(TaskCategory::BugFix, &[first.id.clone()])
+            .select_excluding(TaskCategory::BugFix, &[first.id.as_str()])
             .unwrap();
         assert_eq!(second.id, "b");
         let third = s
-            .select_excluding(TaskCategory::BugFix, &[first.id.clone(), second.id.clone()])
+            .select_excluding(TaskCategory::BugFix, &[first.id.as_str(), second.id.as_str()])
             .unwrap();
         assert_eq!(third.id, "c");
         assert!(s
-            .select_excluding(TaskCategory::BugFix, &["a".into(), "b".into(), "c".into()])
+            .select_excluding(TaskCategory::BugFix, &["a", "b", "c"])
             .is_err());
     }
 
