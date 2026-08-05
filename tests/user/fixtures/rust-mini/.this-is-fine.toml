@@ -1,0 +1,50 @@
+# Shared config for rust-mini fixture (committed).
+version = 1
+enabled = true
+default_fire_level = 3
+
+[verification]
+# Deterministic, cross-platform, fast (cmd /C and sh -c both understand echo).
+commands = ["echo tif-ok"]
+discover = false
+
+[simplicity.weights]
+runtime_dependency = 100
+new_file = 25
+public_interface = 20
+abstraction = 15
+added_line = 1
+unrelated_change = 50
+
+[simplicity.limits]
+new_runtime_dependencies = 0
+
+[approval]
+sensitive_paths = []
+require_firebreak_approval = false
+auto_apply_firebreak = true
+
+[audit]
+tier = "redacted"
+max_age_days = 90
+max_size_mb = 256
+
+[rollback]
+max_days = 7
+successful_commits = 3
+
+[ci]
+on_violation = "fail"
+allow_write = false
+allow_pr = false
+
+[pressure]
+include_baseline = true
+
+# Offline mock reviewer (safe to commit in fixtures; no network).
+[[reviewers]]
+id = "e2e-mock"
+provider = "mock"
+model = "fixture"
+allow_source_egress = false
+priority = 100
