@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/tif-core", "crates/tif"]
+members = ["crates/tif-core", "crates/tif", "crates/tif-e2e"]
 default-members = ["crates/tif"]
 
 [workspace.package]

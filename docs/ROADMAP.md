@@ -38,6 +38,7 @@ Canonical design: [`docs/superpowers/specs/2026-08-04-this-is-fine-design.md`](s
 | [VERSIONING.md](VERSIONING.md) | SemVer / schema / protocol versions |
 | [user-guide.md](user-guide.md) | Install, recovery runbook |
 | [V1_READINESS.md](V1_READINESS.md) | v1.0 Must/Should checklist + soak program |
+| [USER_TESTING.md](USER_TESTING.md) | AI-executable field validation / user testing plan |
 | [../CHANGELOG.md](../CHANGELOG.md) | Release notes |
 
 ## Exit criteria for GA

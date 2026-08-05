@@ -125,20 +125,20 @@ impl Isolator for GitWorktreeIsolator {
             let _ = remove_worktree(source_root, &worktree_path, session_id);
         }
 
-        let path_str = path_to_str(&worktree_path)?;
+        let path_str = path_for_external_tool(&worktree_path)?;
 
         // Create a detached worktree for Firebreak experiments.
         let branch = format!("tif/firebreak/{session_id}");
         let status = git(
             source_root,
-            &["worktree", "add", "-b", &branch, path_str, "HEAD"],
+            &["worktree", "add", "-b", &branch, &path_str, "HEAD"],
         )?;
 
         if !status.success() {
             // Fallback: try without new branch if it exists
             let status2 = git(
                 source_root,
-                &["worktree", "add", "--detach", path_str, "HEAD"],
+                &["worktree", "add", "--detach", &path_str, "HEAD"],
             )?;
             if !status2.success() {
                 return Err(TifError::Isolation(
@@ -204,8 +204,8 @@ impl Isolator for GitWorktreeIsolator {
 }
 
 fn remove_worktree(source_root: &Path, worktree_path: &Path, session_id: &str) -> Result<()> {
-    if let Ok(path_str) = path_to_str(worktree_path) {
-        let _ = git(source_root, &["worktree", "remove", "--force", path_str]);
+    if let Ok(path_str) = path_for_external_tool(worktree_path) {
+        let _ = git(source_root, &["worktree", "remove", "--force", &path_str]);
     }
     let branch = format!("tif/firebreak/{session_id}");
     let _ = git(source_root, &["branch", "-D", &branch]);
@@ -581,18 +581,52 @@ fn is_skipped_name(name: &str) -> bool {
 }
 
 fn git(cwd: &Path, args: &[&str]) -> Result<std::process::ExitStatus> {
+    // Git on Windows rejects verbatim (`\\?\` / `//?/`) paths for worktree dirs.
+    let cwd_norm = normalize_for_external_tool(cwd);
     let status = Command::new("git")
         .args(args)
-        .current_dir(cwd)
+        .current_dir(&cwd_norm)
         .status()
         .map_err(|e| TifError::Isolation(format!("git invocation failed: {e}")))?;
     Ok(status)
 }
 
-fn path_to_str(path: &Path) -> Result<&str> {
-    path.to_str().ok_or_else(|| {
-        TifError::Isolation("path is not valid Unicode; refusing to fall back to '.'".into())
-    })
+/// Strip Windows device/verbatim prefixes so git and other tools get ordinary paths.
+///
+/// Does **not** use lossy Unicode conversion: non-UTF-8 paths are left intact so
+/// `path_for_external_tool` can refuse them instead of handing git a mangled path.
+///
+/// UNC special-case: `\\?\UNC\server\share\...` → `\\server\share\...` (not a
+/// relative `UNC\...` path).
+fn normalize_for_external_tool(path: &Path) -> PathBuf {
+    // Prefix strip only when the path is valid Unicode (Windows verbatim prefixes are ASCII).
+    if let Some(s) = path.to_str() {
+        // Order matters: UNC verbatim before generic `\\?\`.
+        if let Some(rest) = s
+            .strip_prefix(r"\\?\UNC\")
+            .or_else(|| s.strip_prefix("//?/UNC/"))
+            .or_else(|| s.strip_prefix(r"//?/UNC\"))
+        {
+            return PathBuf::from(format!(r"\\{rest}"));
+        }
+        let stripped = s
+            .strip_prefix(r"\\?\")
+            .or_else(|| s.strip_prefix("//?/"))
+            .or_else(|| s.strip_prefix(r"//?\"))
+            .unwrap_or(s);
+        return PathBuf::from(stripped);
+    }
+    path.to_path_buf()
+}
+
+fn path_for_external_tool(path: &Path) -> Result<String> {
+    let normalized = normalize_for_external_tool(path);
+    match normalized.to_str() {
+        Some(s) => Ok(s.to_string()),
+        None => Err(TifError::Isolation(
+            "path is not valid Unicode; refusing to fall back to '.'".into(),
+        )),
+    }
 }
 
 fn chrono_now() -> i64 {

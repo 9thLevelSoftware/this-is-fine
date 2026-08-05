@@ -60,3 +60,30 @@ jobs:
           "$BIN" --version
           "$BIN" init --force
           "$BIN" policy resolve --task "smoke test containment" --json | head -c 200
+
+  # AI field-validation / user-testing battery (docs/USER_TESTING.md).
+  # Tier A/B smoke scenarios; expands as UT-1+ land.
+  user-testing:
+    name: user-testing (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: tif-e2e-${{ matrix.os }}
+
+      - name: Build tif
+        run: cargo build -p tif
+
+      - name: Run tif-e2e battery
+        run: cargo test -p tif-e2e --all-targets -- --nocapture

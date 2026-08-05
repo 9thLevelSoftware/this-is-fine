@@ -4,7 +4,7 @@
 **Baseline:** `main` post phases 0–10 (foundation through GA hardening)  
 **Today’s honest position:** **v0.1 production candidate** — capable under controlled rollout, not GA  
 
-Related: [ROADMAP.md](ROADMAP.md) · [threat-model.md](security/threat-model.md) · [user-guide.md](user-guide.md) · [design](superpowers/specs/2026-08-04-this-is-fine-design.md)
+Related: [ROADMAP.md](ROADMAP.md) · [threat-model.md](security/threat-model.md) · [user-guide.md](user-guide.md) · [USER_TESTING.md](USER_TESTING.md) · [design](superpowers/specs/2026-08-04-this-is-fine-design.md)
 
 ---
 
@@ -120,7 +120,7 @@ _
 
 | ID | Criterion | Pass / Fail criteria | Owner | Evidence | Status |
 |----|-----------|----------------------|-------|----------|--------|
-| **V1** | Controlled soak | ≥ **10 business days** (or ≥ **50** real coding tasks) on real repos with real agents; log incidents | QA / EM | | Unknown |
+| **V1** | Controlled soak | ≥ **10 business days** (or ≥ **50** real coding tasks) on real repos with real agents; log incidents | QA / EM | UT-0/UT-1 harness: Tier A full + core B in `crates/tif-e2e`; **C01 50-task battery still TODO** | In progress |
 | **V2** | Incident log empty of unfixed P0s | All soak P0s fixed or accepted with mitigation before tag | EM | | Unknown |
 | **V3** | Recovery drill | Operator completes dual-failure / rollback drill using only user-guide; time-to-recover recorded | SRE | | Unknown |
 | **V4** | Support ownership named | On-call or support rota exists for apply/rollback incidents; contact path in README or user-guide | SRE | | Unknown |
@@ -172,16 +172,18 @@ _
 
 ## 6. Soak program (V1 detail)
 
+**Preferred execution path:** AI-driven field validation battery — see **[USER_TESTING.md](USER_TESTING.md)** (Tiers A–C, evidence pack, F5 protocol proxy). Human multi-day soak remains valid but is not required if the AI battery meets the substitute rules below.
+
 Minimum for **V1** Pass:
 
 | Parameter | Minimum |
 |-----------|---------|
 | Duration | 10 business days **or** 50 tasks (whichever comes first may Pass if quality bar met; prefer both) |
-| Repos | ≥ 2 real projects (not only fixtures) |
-| Agents | ≥ 1 first-class agent with real tasks |
+| Repos | ≥ 2 real projects (not only fixtures) **or** ≥ 2 multi-language fixture projects under [USER_TESTING.md](USER_TESTING.md) Tier C with documented AI soak substitute |
+| Agents | ≥ 1 first-class agent with real tasks **or** protocol lifecycle **F5 Pass (protocol)** + mock/process reviewer battery |
 | Reviewer mode | Start with **mock** or local process; introduce hosted only after 20 tasks clean |
 | Apply policy | Prefer approval-required for first week on shared repos |
-| Logging | Incident log with date, severity, repro, fix |
+| Logging | Incident log with date, severity, repro, fix (see USER_TESTING evidence pack) |
 
 ### Soak exit criteria
 
@@ -259,7 +261,7 @@ Honest fill-in for planning (update as evidence lands):
 | Feature completeness (design) | **High** — phases 0–10 on main |
 | Automated tests / multi-OS CI | **High** — green matrix on merge path |
 | Supply chain (signing / packages) | **Low–medium** — checksums yes; signing/packages no |
-| Field soak | **Low** — not yet a formal program |
+| Field soak | **Low–medium** — AI battery scaffold (UT-0) + partial Tier A/B; full C01 soak pending |
 | Security review | **Medium** — threat model + code reviews; no formal X2 pack |
 | Support readiness | **Low–medium** — docs exist; rota may be unset |
 
